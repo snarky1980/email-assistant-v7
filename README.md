@@ -89,6 +89,56 @@ or
 - Rotate API key periodically; container restart picks it up.
 
 ### Zero-Downtime Redeploy (Docker example)
+### GitHub Pages (Static Frontend Only)
+GitHub Pages cannot run the Node server (no dynamic backend). Strategy:
+1. Keep static files (`index.html`, `assets/`) on `gh-pages` (already done).
+2. Deploy the API proxy (Node server or Worker) elsewhere (Render, Railway, Fly.io, Cloudflare Worker, etc.).
+3. In `index.html` (before loading the assistant script) set the API base:
+```html
+<meta name="ai-api-base" content="https://your-backend-domain"> <!-- or -->
+<script>window.AI_API_BASE='https://your-backend-domain';</script>
+```
+4. (Optional) Enable CORS on the backend: set `ENABLE_CORS=1` for the Node server or use the Worker variant (already CORS-enabled).
+
+Once GitHub Pages is enabled in repo settings for branch `gh-pages`, your static UI is live. The assistant will call the external backend defined above.
+
+### Cloudflare Worker Deployment
+Use the provided `edge-proxy-worker.js` for a serverless OpenAI proxy.
+1. Install Wrangler: `npm install -g wrangler`
+2. Create config (optional minimal):
+```toml
+# wrangler.toml
+name = "email-assistant-proxy"
+main = "edge-proxy-worker.js"
+compatibility_date = "2025-09-27"
+```
+3. Set secret: `wrangler secret put OPENAI_API_KEY`
+4. Deploy: `wrangler deploy`
+5. Copy the deployed URL and set it via `<meta name="ai-api-base" ...>` in your GitHub Pages site.
+
+### GitHub Action (Optional) to Publish Pages from main
+If you want to develop on `main` and auto-publish to `gh-pages`, add a workflow:
+```yaml
+name: deploy-pages
+on: { push: { branches: [ main ] } }
+jobs:
+   build:
+      runs-on: ubuntu-latest
+      steps:
+         - uses: actions/checkout@v4
+         - name: Prepare gh-pages
+            run: |
+               rm -rf dist
+               mkdir dist
+               cp -R *.html assets favicon.ico dist/
+         - name: Deploy
+            uses: peaceiris/actions-gh-pages@v3
+            with:
+               github_token: ${{ secrets.GITHUB_TOKEN }}
+               publish_branch: gh-pages
+               publish_dir: dist
+```
+
 ```bash
 docker build -t email-assistant:latest .
 docker stop email-assistant || true
