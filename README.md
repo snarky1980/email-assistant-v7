@@ -47,3 +47,51 @@ The OpenAI key lives only in `.env`. It is never embedded client-side. The front
 
 ## License
 Private / internal usage (adjust as needed).
+
+## Deployment
+### Docker
+Build image:
+```bash
+docker build -t email-assistant:v7 .
+```
+Run (pass key via env):
+```bash
+docker run -p 3000:3000 -e OPENAI_API_KEY=sk-your-key email-assistant:v7
+```
+Visit: http://localhost:3000
+
+### Render / Railway / Fly.io / Heroku
+1. Add repository
+2. Set environment variable `OPENAI_API_KEY`
+3. Build command (Node 18+): (none needed unless you add a build step)
+4. Start command: `node server.js`
+
+### Static host + separate API
+If hosting `index.html` + assets on a static CDN but API on another domain:
+1. Set `ENABLE_CORS=1` on the server environment.
+2. In your HTML (static site) set:
+```html
+<script>window.AI_API_BASE='https://your-api-domain';</script>
+```
+or
+```html
+<meta name="ai-api-base" content="https://your-api-domain">
+```
+3. Ensure HTTPS both sides to avoid mixed content blocking.
+
+### Health Checks
+- `/api/ping` basic OK
+- `/api/diag` returns env flags and memory info (safe subset)
+
+### Hardening Ideas (optional)
+- Add reverse proxy (nginx / caddy) in front for TLS termination.
+- Set rate limiting & auth token.
+- Rotate API key periodically; container restart picks it up.
+
+### Zero-Downtime Redeploy (Docker example)
+```bash
+docker build -t email-assistant:latest .
+docker stop email-assistant || true
+docker rm email-assistant || true
+docker run -d --name email-assistant -p 3000:3000 -e OPENAI_API_KEY=sk-your-key email-assistant:latest
+```
