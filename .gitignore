@@ -1,0 +1,14 @@
+# Dependency directories
+node_modules/
+
+# Environment secrets
+.env
+
+# Logs
+*.log
+server.log
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

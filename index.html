@@ -2,13 +2,147 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/x-icon" href="/email-assistant/favicon.ico" />
+    <link rel="icon" type="image/x-icon" href="./favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Assistant Modèles de Courriels - Bureau de la traduction</title>
-    <script type="module" crossorigin src="/email-assistant-v6/assets/index-rjmYuLIG.js"></script>
-    <link rel="stylesheet" crossorigin href="/email-assistant-v6/assets/index-D0Ogn3lF.css">
+    <script type="module" crossorigin src="./assets/index-rjmYuLIG.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-D0Ogn3lF.css">
+    <!-- Integrated AI assistant (inline) -->
+    <script src="./assets/ai-helper.js"></script>
+    <!-- Deprecated floating / template panels kept commented for now -->
+    <!-- <script src="./assets/ai-float.js"></script> -->
+    <script>
+      // Reliability bootstrap: retry main bundle if it failed to append root content, unregister stale SW
+      (function(){
+        const MAX_RETRIES = 2;
+        const RETRY_DELAY = 1200;
+        let attempts = 0;
+        function rootReady(){
+          const r=document.getElementById('root');
+          return r && r.children && r.children.length>0;
+        }
+        function ensure(){
+          if(rootReady()) return;
+          if(attempts>=MAX_RETRIES) return;
+          attempts++;
+          const s=document.createElement('script');
+          s.type='module';
+          s.src='./assets/index-rjmYuLIG.js?retry=' + attempts + '-' + Date.now();
+          s.onerror=function(){ console.warn('[bootstrap] retry script load error'); };
+          document.head.appendChild(s);
+          setTimeout(ensure, RETRY_DELAY);
+        }
+        // Unregister any old service workers that might keep stale cache
+        if('serviceWorker' in navigator){
+          navigator.serviceWorker.getRegistrations().then(regs=>{
+            regs.forEach(reg=>{ reg.unregister().catch(()=>{}); });
+          }).catch(()=>{});
+        }
+        window.addEventListener('load', ()=>{
+          setTimeout(()=>{ if(!rootReady()) ensure(); }, 900); // initial delayed check
+        });
+      })();
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="diagnostic" style="position:fixed;left:12px;top:12px;z-index:10000;background:#fff;color:#000;padding:8px 10px;border:2px solid #0a66ff;border-radius:6px;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;box-shadow:0 4px 12px rgba(2,6,23,0.08);">DIAGNOSTIC: loading...</div>
+      <div id="debug-guardian" style="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:linear-gradient(90deg,#0a66ff,#0058a3);color:#fff;padding:10px 14px;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;display:flex;align-items:center;justify-content:space-between;">
+        <div>Debug banner: If the app appears blank, this confirms scripts executed. <strong style="margin-left:8px">Reload or dismiss.</strong></div>
+        <div style="display:flex;gap:8px;align-items:center"><button id="debug-reload" style="background:#fff;color:#0a66ff;border:none;padding:8px 10px;border-radius:6px;cursor:pointer">Reload</button><button id="debug-close" style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:8px 10px;border-radius:6px;cursor:pointer">Dismiss</button></div>
+      </div>
+    <script>
+      (function(){
+        try{
+          const d = document.getElementById('diagnostic');
+          d.textContent = 'DIAGNOSTIC: DOM ready — scripts=' + document.scripts.length;
+        }catch(e){}
+        window.addEventListener('error', function(ev){
+          try{
+            const d = document.getElementById('diagnostic');
+            d.textContent = 'ERROR: ' + (ev && ev.message ? ev.message : String(ev));
+            d.style.borderColor = '#ff0000';
+            d.style.background = '#fff8f8';
+          }catch(e){}
+        });
+          window.addEventListener('unhandledrejection', function(ev){
+          try{
+            const d = document.getElementById('diagnostic');
+            const msg = ev && ev.reason && ev.reason.message ? ev.reason.message : String(ev.reason);
+            d.textContent = 'PromiseRejection: ' + msg;
+            d.style.borderColor = '#ff0000';
+            d.style.background = '#fff8f8';
+          }catch(e){}
+          });
+        })();
+        document.getElementById('debug-reload').onclick = function(){ location.reload(); };
+        document.getElementById('debug-close').onclick = function(){ document.getElementById('debug-guardian').style.display = 'none'; };
+    </script>
+
+    <script>
+      // Failsafe: if the app appears blank after load, show a visible overlay with reload and diagnostics
+      setTimeout(function(){
+        try{
+          const root = document.getElementById('root');
+          const bodyText = (document.body && document.body.textContent) ? document.body.textContent.trim() : '';
+          const hasRootChildren = root && root.children && root.children.length > 0;
+          const hasVisibleContent = bodyText.length > 100 || hasRootChildren || !!document.querySelector('#ai-float-btn');
+          if (!hasVisibleContent) {
+            const overlay = document.createElement('div');
+            overlay.id = 'blank-overlay';
+            overlay.style = 'position:fixed;inset:0;background:#ffffff;color:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:2147483647;padding:20px;';
+            overlay.innerHTML = `
+              <div style="max-width:720px;text-align:center">
+                <h2 style="margin:0 0 8px 0">App appears blank</h2>
+                <p style="margin:0 0 12px 0">This overlay is a diagnostic fallback. You can reload the page or check the small diagnostic badge at the top-left for errors.</p>
+                <div style="display:flex;gap:8px;justify-content:center;margin-bottom:12px">
+                  <button id="diagnostic-reload" style="background:#0078d4;color:#fff;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Reload page</button>
+                </div>
+                <pre id="diagnostic-pre" style="text-align:left;max-height:220px;overflow:auto;margin-top:12px;background:#f7f7f7;padding:8px;border-radius:6px;border:1px solid #e2e2e2;">scripts: ${document.scripts.length}\n</pre>
+              </div>
+            `;
+            document.body.appendChild(overlay);
+            document.getElementById('diagnostic-reload').onclick = function(){ location.reload(); };
+          }
+        }catch(e){ console.warn('failsafe overlay error', e); }
+      }, 800);
+    </script>
+
+  <div id="root"></div>
+    <div id="app-root-guardian" style="position:fixed;top:0;left:0;background:#fffae6;border-bottom:1px solid #e0d5a3;padding:4px 8px;font-size:11px;z-index:2147483647;font-family:system-ui">App Guardian Active</div>
+    <div id="diagnostic-badge" style="position:fixed;bottom:8px;right:8px;background:#0a66ff;color:#fff;padding:6px 10px;border-radius:20px;font-size:11px;font-family:system-ui;z-index:2147483646;box-shadow:0 2px 6px rgba(0,0,0,0.25)">AI Diagnostics Active</div>
+    <script>
+      (function(){
+        function ensureGuardian(){
+          if(!document.getElementById('app-root-guardian')){
+            const d=document.createElement('div');
+            d.id='app-root-guardian';
+            d.textContent='App Guardian Restored';
+            d.style.cssText='position:fixed;top:0;left:0;background:#fffae6;border-bottom:1px solid #e0d5a3;padding:4px 8px;font-size:11px;z-index:2147483647;font-family:system-ui';
+            document.body.appendChild(d);
+          }
+        }
+        ensureGuardian();
+        const mo=new MutationObserver(()=>ensureGuardian());
+        mo.observe(document.documentElement,{childList:true,subtree:true});
+        window.addEventListener('error', e=>{
+          const badge=document.getElementById('diagnostic-badge');
+            if(badge) badge.textContent='Error: '+(e.message||'');
+        });
+        window.addEventListener('unhandledrejection', e=>{
+          const badge=document.getElementById('diagnostic-badge');
+            if(badge) badge.textContent='Promise Rejection';
+        });
+        setTimeout(()=>{
+          if(!document.getElementById('diagnostic-badge')){
+            const b=document.createElement('div');
+            b.id='diagnostic-badge';
+            b.textContent='AI Diagnostics Fallback';
+            b.style.cssText='position:fixed;bottom:8px;right:8px;background:#0a66ff;color:#fff;padding:6px 10px;border-radius:20px;font-size:11px;font-family:system-ui;z-index:2147483646;box-shadow:0 2px 6px rgba(0,0,0,0.25)';
+            document.body.appendChild(b);
+          }
+        }, 3000);
+      })();
+    </script>
+    <script src="./assets/ai-optional.js"></script>
   </body>
 </html>
