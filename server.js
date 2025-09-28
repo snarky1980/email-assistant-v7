@@ -237,12 +237,40 @@ app.post('/api/admin/import', adminAuth, (req,res)=>{
   res.json({ ok:true, categories: existingCats.length, templates: existingTpls.length });
 });
 
+// Variable extraction helper (curly syntax {{var}}). Returns unique variable names.
+function extractVariables(body){
+  if (typeof body !== 'string') return [];
+  const re = /{{\s*([a-zA-Z0-9_\.\-]+)\s*}}/g; // allow dot & dash
+  const found = new Set();
+  let m; while ((m = re.exec(body))){ found.add(m[1]); }
+  return Array.from(found);
+}
+app.post('/api/admin/variables/extract', adminAuth, (req,res)=>{
+  const { body='' } = req.body || {};
+  res.json({ variables: extractVariables(body) });
+});
+
 // Minimal helper front-end (static HTML) for quick manual testing (non-production UI)
 app.get('/admin', (req,res)=>{
   if (!ADMIN_TOKEN) return res.status(500).send('<h1>Admin disabled</h1><p>Set ADMIN_TOKEN in env.</p>');
   res.setHeader('Content-Type','text/html; charset=utf-8');
-  res.end(`<!DOCTYPE html><html><head><title>Admin Studio (Sprint 1)</title><meta charset="utf-8"/><style>body{font-family:system-ui,Arial;margin:20px;}textarea{width:100%;height:160px;}table{border-collapse:collapse;margin-top:1em;}td,th{border:1px solid #ccc;padding:4px 6px;font-size:12px;}code{background:#f5f5f5;padding:2px 4px;border-radius:3px;}#status{font-size:12px;color:#555;margin-bottom:8px;}button{cursor:pointer;} .row{display:flex;gap:12px;align-items:flex-start} .col{flex:1;min-width:260px;} h2{margin-top:1.2em;} input[type=text]{width:100%;padding:4px;} .tag{display:inline-block;background:#eee;padding:2px 6px;margin:2px;border-radius:3px;font-size:11px;} </style></head><body>
-  <h1>Admin Studio (Sprint 1)</h1>
+  res.end(`<!DOCTYPE html><html><head><title>Admin Studio (Sprint 2)</title><meta charset="utf-8"/><style>
+  body{font-family:system-ui,Arial;margin:20px;}
+  textarea{width:100%;height:140px;}
+  table{border-collapse:collapse;margin-top:1em;}
+  td,th{border:1px solid #ccc;padding:4px 6px;font-size:12px;}
+  #status{font-size:12px;color:#555;margin-bottom:8px;}
+  button{cursor:pointer;}
+  .row{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+  .col{flex:1;min-width:300px;}
+  h2{margin-top:1.2em;}
+  input[type=text]{width:100%;padding:4px;}
+  .tag{display:inline-block;background:#eee;padding:2px 6px;margin:2px;border-radius:3px;font-size:11px;}
+  #varList{max-height:80px;overflow:auto;}
+  #preview{white-space:pre-wrap;border:1px solid #ccc;padding:6px;font-size:12px;background:#fafafa;margin-top:6px;}
+  .small{font-size:11px;color:#666;}
+  </style></head><body>
+  <h1>Admin Studio (Sprint 2)</h1>
   <div id=status>Loading...</div>
   <script>const TOKEN = prompt('Admin token?'); if(!TOKEN){document.body.innerHTML='<h2>Token required</h2>';}</script>
   <div class=row>
@@ -256,12 +284,24 @@ app.get('/admin', (req,res)=>{
     </div>
     <div class=col>
       <h2>Templates</h2>
-      <form id=tplForm onsubmit="createTpl(event)">
+      <form id=tplForm onsubmit="saveTpl(event)">
+        <input type=hidden name=id />
         <input name=name placeholder='Template name' required />
         <select name=categoryId id=tplCatSel><option value="">(no category)</option></select>
-        <textarea name=body placeholder='Body'></textarea>
-        <button>Create</button>
+        <textarea name=body placeholder='Body with {{variables}}'></textarea>
+        <div style='margin:4px 0;'>
+          <button type=button onclick="detectVars()">Detect Vars</button>
+          <button type=button onclick="clearVars()">Clear Vars</button>
+          <button type=button onclick="previewTpl()">Preview</button>
+        </div>
+        <div id=varList style='min-height:24px;border:1px dashed #ccc;padding:4px;font-size:11px;'></div>
+        <div id=preview hidden></div>
+        <div style='margin-top:6px;'>
+          <button id=saveBtn>Create</button>
+          <button type=button onclick="cancelEdit()" id=cancelBtn style='display:none;'>Cancel</button>
+        </div>
       </form>
+      <div class=small>Tip: use {{variable_name}} syntax in body, then Detect Vars.</div>
       <table id=tplTable><thead><tr><th>Name</th><th>Category</th><th>Vars</th><th>Actions</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
@@ -294,30 +334,78 @@ app.get('/admin', (req,res)=>{
     tpls.forEach(t=>{
       const cat = cats.find(c=>c.id===t.categoryId); const vars=(t.variables||[]).map(v=>'<span class=tag>'+escapeHtml(v.name)+'</span>').join('');
       const tr=document.createElement('tr');
-      tr.innerHTML='<td>'+escapeHtml(t.name)+'</td><td>'+(cat?escapeHtml(cat.name):'')+'</td><td>'+vars+'</td><td><button onclick="editTpl(\''+t.id+'\')">Edit</button> <button onclick="delTpl(\''+t.id+'\')">Del</button></td>';
+      tr.innerHTML='<td>'+escapeHtml(t.name)+'</td><td>'+(cat?escapeHtml(cat.name):'')+'</td><td>'+vars+'</td><td><button onclick="beginEdit(\''+t.id+'\')">Edit</button> <button onclick="delTpl(\''+t.id+'\')">Del</button></td>';
       tb.appendChild(tr);
     });
   }
   function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
   async function createCat(e){e.preventDefault(); const fd=new FormData(e.target); await api('/api/admin/categories',{method:'POST',body:JSON.stringify({name:fd.get('name')})}); e.target.reset(); refresh();}
   async function delCat(id){ if(!confirm('Delete category?'))return; await api('/api/admin/categories/'+id,{method:'DELETE'}); refresh(); }
-  async function createTpl(e){e.preventDefault(); const fd=new FormData(e.target); await api('/api/admin/templates',{method:'POST',body:JSON.stringify({name:fd.get('name'),categoryId:fd.get('categoryId')||null,body:fd.get('body'),variables:[]})}); e.target.reset(); refresh();}
-  async function delTpl(id){ if(!confirm('Delete template?'))return; await api('/api/admin/templates/'+id,{method:'DELETE'}); refresh(); }
-  async function editTpl(id){
+  async function delTpl(id){ if(!confirm('Delete template?'))return; await api('/api/admin/templates/'+id,{method:'DELETE'}); refresh(); if(document.querySelector('#tplForm [name=id]').value===id) cancelEdit(); }
+  function beginEdit(id){
     const t = tpls.find(x=>x.id===id); if(!t) return alert('Not found');
-    const newName = prompt('Name', t.name); if(!newName) return;
-    const newBody = prompt('Body (multi-line not supported here)', t.body); if(newBody==null) return;
-    await api('/api/admin/templates/'+id,{method:'PUT',body:JSON.stringify({name:newName,body:newBody})});
-    refresh();
+    const f = document.getElementById('tplForm');
+    f.id.value = t.id; f.name.value = t.name; f.categoryId.value = t.categoryId || ''; f.body.value = t.body || '';
+    setVars((t.variables||[]).map(v=>v.name));
+    document.getElementById('saveBtn').textContent='Save';
+    document.getElementById('cancelBtn').style.display='inline-block';
+  }
+  function cancelEdit(){
+    const f = document.getElementById('tplForm');
+    f.reset(); f.id.value=''; clearVars(); document.getElementById('saveBtn').textContent='Create'; document.getElementById('cancelBtn').style.display='none'; document.getElementById('preview').hidden=true; document.getElementById('preview').textContent='';
+  }
+  function setVars(list){
+    const container = document.getElementById('varList'); container.innerHTML='';
+    list.forEach(v=> addVarChip(v));
+  }
+  function addVarChip(name){
+    if(!name) return; name=name.trim(); if(!name) return;
+    const existing = Array.from(document.querySelectorAll('#varList .tag')).map(e=>e.dataset.name.toLowerCase());
+    if (existing.includes(name.toLowerCase())) return;
+    const span=document.createElement('span'); span.className='tag'; span.dataset.name=name; span.textContent=name; span.title='Click to remove'; span.onclick=()=>{ span.remove(); };
+    document.getElementById('varList').appendChild(span);
+  }
+  function getVars(){ return Array.from(document.querySelectorAll('#varList .tag')).map(e=>({name:e.dataset.name})); }
+  function clearVars(){ document.getElementById('varList').innerHTML=''; }
+  async function detectVars(){
+    const body = document.getElementById('tplForm').body.value; if(!body) return;
+    try { const r = await api('/api/admin/variables/extract',{method:'POST',body:JSON.stringify({body})}); setVars(r.variables); } catch(e){ alert('Detect error '+e.message); }
+  }
+  function previewTpl(){
+    const f = document.getElementById('tplForm');
+    let text = f.body.value;
+    getVars().forEach(v=>{ const sample = '['+v.name+']'; const re = new RegExp('{{\\s*'+v.name.replace(/[-\\^$*+?.()|[\]{}]/g,'\\$&')+'\\s*}}','g'); text = text.replace(re, sample); });
+    const box = document.getElementById('preview'); box.hidden=false; box.textContent=text;
+  }
+  async function saveTpl(e){
+    e.preventDefault(); const f=e.target; const fd=new FormData(f); const payload={name:fd.get('name'),categoryId:fd.get('categoryId')||null,body:fd.get('body'),variables:getVars()};
+    const id = fd.get('id');
+    if(id){ await api('/api/admin/templates/'+id,{method:'PUT',body:JSON.stringify(payload)}); }
+    else { await api('/api/admin/templates',{method:'POST',body:JSON.stringify(payload)}); }
+    cancelEdit(); refresh();
   }
   refresh();
   </script>
   </body></html>`);
 });
-
-// --- Error & resilience handlers ---
-process.on('unhandledRejection', (reason)=>{ log('UNHANDLED_REJECTION', reason && reason.stack || reason); });
-process.on('uncaughtException', (err)=>{ log('UNCAUGHT_EXCEPTION', err.stack || err); });
+    async function detectVars(){
+      const body = document.getElementById('tplForm').body.value;
+      if(!body) return;
+      try { const r = await api('/api/admin/variables/extract',{method:'POST',body:JSON.stringify({body})}); setVars(r.variables); } catch(e){ alert('Detect error '+e.message); }
+    }
+    function previewTpl(){
+      const f = document.getElementById('tplForm');
+      let text = f.body.value;
+      getVars().forEach(v=>{ const sample = '['+v.name+']'; const re = new RegExp('{{\\s*'+v.name.replace(/[-\\^$*+?.()|[\]{}]/g,'\\$&')+'\\s*}}','g'); text = text.replace(re, sample); });
+      const box = document.getElementById('preview'); box.hidden=false; box.textContent=text;
+    }
+    async function saveTpl(e){
+      e.preventDefault(); const f=e.target; const fd=new FormData(f); const payload={name:fd.get('name'),categoryId:fd.get('categoryId')||null,body:fd.get('body'),variables:getVars()};
+      const id = fd.get('id');
+      if(id){ await api('/api/admin/templates/'+id,{method:'PUT',body:JSON.stringify(payload)}); }
+      else { await api('/api/admin/templates',{method:'POST',body:JSON.stringify(payload)}); }
+      cancelEdit(); refresh();
+    }
 process.on('SIGTERM', ()=>{ log('SIGTERM received, shutting down'); process.exit(0); });
 process.on('SIGINT', ()=>{ log('SIGINT received, shutting down'); process.exit(0); });
 
