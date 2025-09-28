@@ -19,6 +19,7 @@ const ENABLE_HEARTBEAT = process.env.HEARTBEAT !== '0'; // default on
 const ENABLE_SELF_PING = process.env.SELF_PING === '1'; // opt‑in (could create extra noise)
 const LOG_REQUESTS = process.env.LOG_REQUESTS === '1';
 const ENABLE_CORS = process.env.ENABLE_CORS === '1';
+const PUBLIC_TEMPLATES = process.env.PUBLIC_TEMPLATES === '1'; // if enabled, exposes read-only public template list
 
 function log(...args){
   const line = `[${new Date().toISOString()}] ${args.join(' ')}`;
@@ -256,6 +257,22 @@ app.post('/api/admin/variables/extract', adminAuth, (req,res)=>{
   const { body='' } = req.body || {};
   res.json({ variables: extractVariables(body) });
 });
+
+// Public (unauthenticated) template listing (sanitized) if enabled
+if (PUBLIC_TEMPLATES) {
+  app.get('/api/templates-public', (req,res)=>{
+    try {
+      const list = readJsonArray(TPL_FILE).filter(t=> !t.deletedAt).map(t=> ({
+        id: t.id,
+        name: t.name,
+        body: t.body,
+        variables: (t.variables||[]).map(v=> ({ name:v.name, sample: v.sample })),
+        updatedAt: t.updatedAt || t.createdAt
+      }));
+      res.json({ templates: list, count: list.length, generatedAt: new Date().toISOString() });
+    } catch(e){ res.status(500).json({ error:'failed' }); }
+  });
+}
 
 // Minimal helper front-end (static HTML) for quick manual testing (non-production UI)
 app.get('/admin', (req,res)=>{

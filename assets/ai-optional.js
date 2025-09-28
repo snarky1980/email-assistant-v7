@@ -208,6 +208,17 @@
     ensureLauncher();
     // Test backend connectivity and surface status
     testBackendConnectivity();
+    // Integration: listen for template insertion events from Admin Studio
+    window.addEventListener('admin-insert-template', e=>{
+      try {
+        const bodyText = e.detail && e.detail.body || '';
+        if(bodyText){
+          body().value = bodyText;
+          lastAssistantEdit = Date.now();
+          setStatus('Modèle inséré');
+        }
+      } catch(_){ /* ignore */ }
+    });
   }
 
   function startDrag(e){ if(e.target.tagName==='BUTTON') return; dragging=true; const rect=panel.getBoundingClientRect(); dragOffset=[e.clientX-rect.left,e.clientY-rect.top]; e.preventDefault(); }
