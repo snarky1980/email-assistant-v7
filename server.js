@@ -387,6 +387,8 @@ app.get('/admin', (req,res)=>{
     </div>
   </div>
   <script>
+  // Initialize token variable (previously implicit). Safe if empty; overlay will request it.
+  let TOKEN = localStorage.getItem('ADMIN_TOKEN_CACHE') || '';
   <script>
     // Token overlay logic (replaces prompt)
     function openTokenPanel(){ document.getElementById('tokenOverlay').style.display='flex'; setTimeout(()=>document.getElementById('tokenInput').focus(),30); }
@@ -446,7 +448,17 @@ app.get('/admin', (req,res)=>{
   async function api(path, opts={}){
     opts.headers = Object.assign({}, opts.headers||{}, { 'Content-Type':'application/json', 'Authorization':'Bearer '+TOKEN });
     const r = await fetch(path, opts);
-    if(!r.ok) throw new Error(r.status+' '+r.statusText); return r.json();
+    if(r.status===401){
+      // Invalid/missing token -> open overlay
+      if(typeof openTokenPanel==='function') openTokenPanel();
+      throw new Error('Unauthorized');
+    }
+    if(!r.ok){
+      let txt=''; try{ txt=await r.text(); }catch(_){}
+      throw new Error('API '+r.status+' '+txt);
+    }
+    if(r.status===204) return null;
+    return r.json();
   }
   let cats=[], tpls=[], lastArchivedId=null, undoTimer=null;
   async function refresh(){
