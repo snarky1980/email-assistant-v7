@@ -278,29 +278,94 @@ if (PUBLIC_TEMPLATES) {
 app.get('/admin', (req,res)=>{
   if (!ADMIN_TOKEN && !ADMIN_TOKEN_2) return res.status(500).send('<h1>Admin disabled</h1><p>Set ADMIN_TOKEN in env.</p>');
   res.setHeader('Content-Type','text/html; charset=utf-8');
-  res.end(`<!DOCTYPE html><html><head><title>Admin Studio (Sprint 3)</title><meta charset="utf-8"/><style>
-  body{font-family:system-ui,Arial;margin:20px;}
-  textarea{width:100%;height:140px;}
-  table{border-collapse:collapse;margin-top:1em;}
-  td,th{border:1px solid #ccc;padding:4px 6px;font-size:12px;vertical-align:top;}
-  #status{font-size:12px;color:#555;margin-bottom:8px;}
-  button{cursor:pointer;}
-  .row{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
-  .col{flex:1;min-width:300px;}
-  h2{margin-top:1.2em;}
-  input[type=text]{width:100%;padding:4px;}
-  #varList{max-height:200px;overflow:auto;border:1px dashed #ccc;padding:4px;font-size:11px;}
-  #preview{white-space:pre-wrap;border:1px solid #ccc;padding:6px;font-size:12px;background:#fafafa;margin-top:6px;}
-  .small{font-size:11px;color:#666;}
-  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 4px;}
-  .var-row{display:flex;gap:4px;align-items:center;margin:2px 0;}
-  .var-row input{padding:3px 5px;font-size:11px;}
-  .var-row button{font-size:11px;padding:3px 6px;}
-  .archived{opacity:.45;}
-  .pill{display:inline-block;background:#e2e8f0;padding:2px 6px;font-size:10px;border-radius:12px;margin-left:4px;}
+  res.end(`<!DOCTYPE html><html><head><title>Admin Studio</title><meta charset="utf-8"/><style>
+  :root{--bg:#f6f8fa;--panel:#ffffff;--border:#d0d7de;--accent:#2563eb;--accent-hover:#1d4ed8;--accent-soft:#e0efff;--danger:#dc2626;--danger-bg:#fee2e2;--radius:10px;--text:#0f172a;--muted:#64748b;--green:#15803d;--green-bg:#dcfce7;}
+  *{box-sizing:border-box;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+  body{margin:0;background:linear-gradient(135deg,#f0f4f8,#f7fafc);color:var(--text);} h1{margin:0 0 14px;font-size:20px;letter-spacing:.5px;}
+  header.top{background:var(--panel);padding:14px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 4px -2px #0f172a1a;position:sticky;top:0;z-index:20;}
+  .badge{background:var(--accent-soft);color:var(--accent);font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600;letter-spacing:.5px;margin-left:10px;}
+  #status{font-size:12px;color:var(--muted);min-height:18px;margin-top:4px;}
+  main{padding:20px;display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap;}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px 18px 20px;flex:1;min-width:320px;box-shadow:0 4px 14px -6px #0f172a20,0 2px 4px -2px #0f172a14;position:relative;}
+  h2{margin:0 0 12px;font-size:15px;letter-spacing:.4px;display:flex;align-items:center;gap:8px;}
+  textarea{width:100%;height:150px;resize:vertical;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font:13px/1.4 system-ui,Segoe UI,Roboto,Arial;box-shadow:inset 0 1px 2px #0f172a10;background:#fff;}
+  textarea:focus,input:focus,select:focus{outline:2px solid var(--accent);outline-offset:2px;border-color:var(--accent);} input[type=text],select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fff;}
+  table{border-collapse:separate;border-spacing:0;width:100%;margin-top:10px;font-size:12px;}
+  th,td{border:1px solid var(--border);padding:6px 8px;vertical-align:top;background:#fff;}
+  th{background:#f1f5f9;font-weight:600;letter-spacing:.3px;text-align:left;}
+  tr.archived td{opacity:.55;background:#fafafa;}
+  button{cursor:pointer;border:1px solid var(--border);background:#f8fafc;color:#0f172a;font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;letter-spacing:.3px;display:inline-flex;align-items:center;gap:4px;transition:.18s background,.18s color,.18s border-color;}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent);} button.primary:hover{background:var(--accent-hover);} button.danger{background:var(--danger-bg);border-color:var(--danger);color:#b91c1c;} button.danger:hover{background:#fecaca;}
+  button.soft{background:#f1f5f9;} button.soft:hover{background:#e2e8f0;}
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 10px;align-items:center;}
+  #varList{max-height:210px;overflow:auto;display:flex;flex-direction:column;gap:4px;margin-top:6px;}
+  .var-row{display:grid;grid-template-columns:120px 1fr 120px 34px;gap:6px;align-items:center;}
+  .var-row input{padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:6px;}
+  .pill{background:#e2e8f0;padding:2px 6px;font-size:10px;border-radius:14px;}
+  .tag{display:inline-block;background:#eef6ff;color:#0369a1;padding:2px 6px;margin:2px 2px 0 0;border-radius:5px;font-size:10px;font-weight:600;letter-spacing:.3px;}
+  #preview{white-space:pre-wrap;border:1px solid var(--border);background:#fff;border-radius:8px;padding:8px 10px;font-size:12px;margin-top:10px;max-height:200px;overflow:auto;box-shadow:inset 0 1px 2px #0f172a0d;}
+  .small{font-size:11px;color:var(--muted);margin-top:6px;}
+  .invalid-var{background:#fef2f2 !important;color:#b91c1c !important;}
+  .hint{font-size:11px;color:var(--muted);}
+  .flex{display:flex;align-items:center;gap:8px;}
+  .space-between{display:flex;justify-content:space-between;align-items:center;}
+  .fade{opacity:.6;}
+  .float-btns{position:absolute;top:10px;right:10px;display:flex;gap:6px;}
+  kbd{background:#fff;border:1px solid var(--border);padding:2px 6px;border-radius:6px;font-size:10px;box-shadow:0 1px 0 #0f172a10;}
+  .status-ok{color:var(--green);} .status-err{color:var(--danger);} .status-warn{color:#b45309;}
   </style></head><body>
-  <h1>Admin Studio (Sprint 3)</h1>
-  <div id=status>Loading...</div>
+  <header class="top"><div class="flex"><h1>Admin Studio<span class="badge">v3+</span></h1></div><div class="hint">Shortcuts: <kbd>⌘/Ctrl+S</kbd> save · <kbd>/</kbd> search · <kbd>Esc</kbd> cancel</div></header>
+  <div style="padding:0 22px 4px"><div id=status>Loading...</div></div>
+  <main>
+    <section class="panel" id="panel-cats">
+      <div class="space-between"><h2>Categories</h2><div class=float-btns><button class="soft" onclick="refresh()" title="Refresh">↻</button></div></div>
+      <form id=catForm onsubmit="createCat(event)" class=flex style="gap:6px;flex-wrap:wrap;">
+        <input name=name placeholder='New category' required style="flex:1;min-width:160px;" />
+        <button class=primary>Add</button>
+      </form>
+      <table id=catTable><thead><tr><th style="width:60%">Name</th><th>Actions</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section class="panel" id="panel-templates">
+      <div class="space-between"><h2>Templates</h2><div class=float-btns><button class="soft" onclick="refresh()" title="Refresh">↻</button></div></div>
+      <div class=toolbar>
+        <input id=searchTpl placeholder='Search (name/body)' style='flex:1;min-width:160px;'>
+        <select id=sortTpl>
+          <option value="name">Name</option>
+          <option value="createdAt">Created</option>
+          <option value="updatedAt">Updated</option>
+        </select>
+        <label class=flex style='font-size:11px;'><input type=checkbox id=showArchived> Archived</label>
+        <button type=button class=soft onclick="doExport()">Export</button>
+        <label style='font-size:11px;'>Import <input type=file id=importFile style='font-size:10px;padding:2px;'></label>
+      </div>
+      <form id=tplForm onsubmit="saveTpl(event)" style="margin-top:4px;">
+        <input type=hidden name=id />
+        <input name=name placeholder='Template name' required />
+        <select name=categoryId id=tplCatSel><option value="">(no category)</option></select>
+        <textarea name=body id=tplBody placeholder='Body with {{variables}}'></textarea>
+        <div class=flex style='flex-wrap:wrap;gap:6px;margin-top:6px;'>
+          <button type=button class=soft onclick="detectVars()">Detect Vars</button>
+          <button type=button class=soft onclick="addEmptyVar()">Add Var</button>
+          <button type=button class=soft onclick="clearVars()">Clear Vars</button>
+          <button type=button class=soft onclick="previewTpl()">Preview</button>
+          <button type=button class=soft onclick="insertIntoEditor()">Insert → Editor</button>
+          <button type=button class=soft onclick="insertIntoAssistant()">Insert → Assistant</button>
+          <button type=button class=soft onclick="duplicateCurrent()">Duplicate</button>
+          <button type=button class=soft onclick="copyBody()">Copy Body</button>
+        </div>
+        <div id=varList></div>
+        <div id=preview hidden></div>
+        <div style='margin-top:10px;display:flex;gap:10px;'>
+          <button id=saveBtn class=primary style="flex:1;">Create</button>
+          <button type=button onclick="cancelEdit()" id=cancelBtn style='display:none;' class=soft>Cancel</button>
+        </div>
+        <div class="small" id="varSummary"></div>
+      </form>
+      <div class=small>Use {{variable_name}} syntax, then Detect Vars. Unused/unknown variables highlighted.</div>
+      <table id=tplTable><thead><tr><th style="width:24%">Name</th><th style="width:15%">Category</th><th style="width:18%">Vars</th><th style="width:10%">Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
+    </section>
+  </main>
+  <script>
   <script>let TOKEN=localStorage.getItem('ADMIN_TOKEN_CACHE')||''; if(!TOKEN){ TOKEN=prompt('Admin token?'); if(TOKEN) localStorage.setItem('ADMIN_TOKEN_CACHE',TOKEN);} if(!TOKEN){ document.body.innerHTML='<h2>Token required</h2>'; }</script>
   <div class=row>
     <div class=col>
@@ -348,7 +413,7 @@ app.get('/admin', (req,res)=>{
       <table id=tplTable><thead><tr><th>Name</th><th>Category</th><th>Vars</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
-  <script>
+  // --- Existing logic (extended) ---
   async function api(path, opts={}){
     opts.headers = Object.assign({}, opts.headers||{}, { 'Content-Type':'application/json', 'Authorization':'Bearer '+TOKEN });
     const r = await fetch(path, opts);
@@ -386,9 +451,12 @@ app.get('/admin', (req,res)=>{
       return 0;
     });
     list.forEach(t=>{
-      const cat = cats.find(c=>c.id===t.categoryId); const vars=(t.variables||[]).map(v=>'<span class=tag>'+escapeHtml(v.name)+'</span>').join('');
+      const cat = cats.find(c=>c.id===t.categoryId); const vars=(t.variables||[]).slice(0,4).map(v=>'<span class=tag>'+escapeHtml(v.name)+'</span>').join('') + ((t.variables||[]).length>4?'<span class=tag>+'+((t.variables||[]).length-4)+'</span>':'');
       const tr=document.createElement('tr'); if(t.deletedAt) tr.classList.add('archived');
-      tr.innerHTML='<td>'+escapeHtml(t.name)+'</td><td>'+(cat?escapeHtml(cat.name):'')+'</td><td>'+vars+'</td><td>'+(t.deletedAt?'<span class=pill>archived</span>':'')+'</td><td>'+(t.deletedAt?'<button onclick="restoreTpl(\''+t.id+'\')">Restore</button>':'<button onclick="beginEdit(\''+t.id+'\')">Edit</button> <button onclick="archiveTpl(\''+t.id+'\')">Archive</button> <button onclick="quickInsert(\''+t.id+'\')">Insert</button>')+'</td>';
+      tr.innerHTML='<td>'+escapeHtml(t.name)+'</td><td>'+(cat?escapeHtml(cat.name):'')+'</td><td>'+vars+'</td><td>'+(t.deletedAt?'<span class=pill>archived</span>':'')+'</td><td style="white-space:nowrap;display:flex;flex-wrap:wrap;gap:4px;">'+
+        (t.deletedAt?'<button class=soft onclick="restoreTpl(\''+t.id+'\')" title="Restore">Restore</button>' :
+        '<button class=soft onclick="beginEdit(\''+t.id+'\')" title="Edit">Edit</button><button class=soft onclick="duplicateTpl(\''+t.id+'\')" title="Duplicate">Dup</button><button class=soft onclick="copyTpl(\''+t.id+'\')" title="Copy body">Copy</button><button class=soft onclick="quickInsert(\''+t.id+'\')" title="Insert">Insert</button><button class="soft" onclick="archiveTpl(\''+t.id+'\')" title="Archive">Archive</button>')+
+        '</td>';
       tb.appendChild(tr);
     });
   }
@@ -431,6 +499,7 @@ app.get('/admin', (req,res)=>{
     let text = f.body.value;
     getVars().forEach(v=>{ const sample = v.sample || '['+v.name+']'; const re = new RegExp('{{\\s*'+v.name.replace(/[-\\^$*+?.()|[\]{}]/g,'\\$&')+'\\s*}}','g'); text = text.replace(re, sample); });
     const box = document.getElementById('preview'); box.hidden=false; box.textContent=text;
+    validateVars();
   }
   async function saveTpl(e){
     e.preventDefault(); const f=e.target; const fd=new FormData(f); const payload={name:fd.get('name'),categoryId:fd.get('categoryId')||null,body:fd.get('body'),variables:getVars()};
@@ -438,7 +507,32 @@ app.get('/admin', (req,res)=>{
     if(id){ await api('/api/admin/templates/'+id,{method:'PUT',body:JSON.stringify(payload)}); }
     else { await api('/api/admin/templates',{method:'POST',body:JSON.stringify(payload)}); }
     cancelEdit(); refresh();
+    localStorage.setItem('ADMIN_LAST_TEMPLATE_NAME', payload.name);
   }
+  function duplicateTpl(id){ const t=tpls.find(x=>x.id===id); if(!t) return; beginEdit(id); const f=document.getElementById('tplForm'); f.id.value=''; document.getElementById('saveBtn').textContent='Create'; f.name.value=t.name+' Copy'; }
+  function duplicateCurrent(){ const id=document.getElementById('tplForm').id.value; if(!id) return alert('Not editing'); duplicateTpl(id); }
+  async function copyTpl(id){ const t=tpls.find(x=>x.id===id); if(!t) return; await navigator.clipboard.writeText(t.body||''); toast('Copied'); }
+  async function copyBody(){ const b=document.getElementById('tplForm').body.value; if(!b) return; await navigator.clipboard.writeText(b); toast('Copied'); }
+  function toast(msg){ const st=document.getElementById('status'); st.textContent=msg; setTimeout(()=>{ if(st.textContent===msg) st.textContent=''; },2000); }
+  function validateVars(){
+    const body=document.getElementById('tplForm').body.value;
+    const re=/{{\s*([a-zA-Z0-9_\.\-]+)\s*}}/g; const found=new Set(); let m; while((m=re.exec(body))) found.add(m[1].toLowerCase());
+    const rows=document.querySelectorAll('#varList .var-row'); let unused=0; rows.forEach(r=>{ const n=r.querySelector('.var-name').value.trim(); const used=found.has(n.toLowerCase()); r.classList.toggle('fade', !used && n); if(!used && n) unused++; });
+    const unknown=[...found].filter(f=> ![...rows].some(r=> r.querySelector('.var-name').value.trim().toLowerCase()===f));
+    document.getElementById('varSummary').innerHTML = (unknown.length?'<span class= status-err>'+unknown.length+' unknown</span> ':'') + (unused?'<span class=status-warn>'+unused+' unused</span> ':'') + '<span class=status-ok>'+found.size+' used</span>';
+    highlightUnknownInBody(unknown);
+  }
+  function highlightUnknownInBody(unknown){ const ta=document.getElementById('tplBody'); if(!unknown.length){ ta.classList.remove('invalid-var'); return; } ta.classList.add('invalid-var'); }
+  document.getElementById('tplBody').addEventListener('input', ()=>{ if(!document.getElementById('preview').hidden) previewTpl(); else validateVars(); });
+  document.addEventListener('keydown', e=>{
+    if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='s'){ const f=document.getElementById('tplForm'); if(f){ e.preventDefault(); f.requestSubmit(); }}
+    if(e.key==='/' && document.activeElement.tagName!=='INPUT' && document.activeElement.tagName!=='TEXTAREA'){ e.preventDefault(); document.getElementById('searchTpl').focus(); }
+    if(e.key==='Escape'){ const cancel=document.getElementById('cancelBtn'); if(cancel.style.display!=='none') cancelEdit(); }
+  });
+  // Restore last template focus by name (best effort)
+  const lastName=localStorage.getItem('ADMIN_LAST_TEMPLATE_NAME'); if(lastName){ setTimeout(()=>{ const t=tpls.find(x=>x.name===lastName); if(t) beginEdit(t.id); },1500); }
+  // Re-validate after initial load
+  setTimeout(validateVars, 2000);
   function dispatchInsertEvents(body){ try { window.dispatchEvent(new CustomEvent('admin-insert-template',{ detail:{ body } })); } catch(_){ } const ed=document.querySelector('textarea,[contenteditable="true"]'); if(ed){ if(ed.tagName==='TEXTAREA'){ ed.value=body; ed.dispatchEvent(new Event('input',{bubbles:true})); } else if(ed.isContentEditable){ ed.innerText=body; ed.dispatchEvent(new Event('input',{bubbles:true})); } } }
   function insertIntoEditor(){ const b=document.getElementById('tplForm').body.value; if(!b) return alert('Empty'); dispatchInsertEvents(b); }
   function insertIntoAssistant(){ insertIntoEditor(); }
