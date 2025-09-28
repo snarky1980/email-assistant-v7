@@ -465,19 +465,18 @@ app.get('/admin', (req,res)=>{
     </div>
   </div>
   <script>
-  // Initialize token variable (previously implicit). Safe if empty; overlay will request it.
+  // --- Boot / Token Modal / Basic Error Guard ---
   let TOKEN = localStorage.getItem('ADMIN_TOKEN_CACHE') || '';
-  <script>
-    // Token overlay logic (replaces prompt)
-    function openTokenPanel(){ document.getElementById('tokenOverlay').style.display='flex'; setTimeout(()=>document.getElementById('tokenInput').focus(),30); }
-    function closeTokenPanel(){ document.getElementById('tokenOverlay').style.display='none'; }
-    function resetToken(){ localStorage.removeItem('ADMIN_TOKEN_CACHE'); document.getElementById('tokenInput').value=''; document.getElementById('tokenInput').focus(); }
-    function saveToken(){ const v=document.getElementById('tokenInput').value.trim(); if(!v){ alert('Token required'); return; } localStorage.setItem('ADMIN_TOKEN_CACHE',v); closeTokenPanel(); location.reload(); }
-    (function initToken(){ let t=localStorage.getItem('ADMIN_TOKEN_CACHE')||''; if(!t){ openTokenPanel(); } })();
-    document.addEventListener('keydown',e=>{ if(e.key==='t' && (e.metaKey||e.ctrlKey) && !document.getElementById('tokenOverlay').contains(document.activeElement)){ openTokenPanel(); } });
-  <script>
-  // Initialize TOKEN early (replaces old prompt approach)
-  let TOKEN = localStorage.getItem('ADMIN_TOKEN_CACHE') || '';
+  function openTokenPanel(){ document.getElementById('tokenOverlay').style.display='flex'; setTimeout(()=>document.getElementById('tokenInput').focus(),30); }
+  function closeTokenPanel(){ document.getElementById('tokenOverlay').style.display='none'; }
+  function resetToken(){ localStorage.removeItem('ADMIN_TOKEN_CACHE'); document.getElementById('tokenInput').value=''; document.getElementById('tokenInput').focus(); }
+  function saveToken(){ const v=document.getElementById('tokenInput').value.trim(); if(!v){ alert('Token required'); return; } localStorage.setItem('ADMIN_TOKEN_CACHE',v); closeTokenPanel(); location.reload(); }
+  (function initToken(){ if(!TOKEN){ openTokenPanel(); } })();
+  document.addEventListener('keydown',e=>{ if(e.key==='t' && (e.metaKey||e.ctrlKey) && !document.getElementById('tokenOverlay').contains(document.activeElement)){ openTokenPanel(); } });
+  // Minimal surfaced errors so a blank page isn't silent
+  window.addEventListener('error', ev=>{ const st=document.getElementById('status'); if(st) st.textContent='Error: '+ev.message; });
+  window.addEventListener('unhandledrejection', ev=>{ const st=document.getElementById('status'); if(st) st.textContent='Promise error: '+(ev.reason&&ev.reason.message||ev.reason); });
+  if(!TOKEN){ const st=document.getElementById('status'); if(st) st.innerHTML='First time? 1) In terminal run <code>npm run set-admin-token</code>. 2) Restart server. 3) Paste token above.'; }
       <form id=catForm onsubmit="createCat(event)">
         <input name=name placeholder='Category name' required />
         <button>Add</button>
