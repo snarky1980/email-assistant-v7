@@ -14,6 +14,7 @@ const ADMIN_TOKEN_2 = process.env.ADMIN_TOKEN_2 || null; // optional secondary t
 const DATA_DIR = path.join(__dirname, 'data');
 const TPL_FILE = path.join(DATA_DIR, 'templates.json');
 const CAT_FILE = path.join(DATA_DIR, 'categories.json');
+const TOK_FILE = path.join(DATA_DIR, 'admin_tokens.json');
 const LOG_FILE = process.env.LOG_FILE || 'server.log';
 const ENABLE_HEARTBEAT = process.env.HEARTBEAT !== '0'; // default on
 const ENABLE_SELF_PING = process.env.SELF_PING === '1'; // opt‑in (could create extra noise)
@@ -123,6 +124,14 @@ function ensureDataFiles(){
   for (const f of [TPL_FILE,CAT_FILE]){
     try { if (!fs.existsSync(f)) fs.writeFileSync(f,'[]','utf8'); } catch(e){}
   }
+  // Initialize token file if missing (seeding env tokens if present)
+  if(!fs.existsSync(TOK_FILE)){
+    const now=new Date().toISOString();
+    const seed=[];
+    if(ADMIN_TOKEN) seed.push({ id:'seed_primary', token:ADMIN_TOKEN, role:'admin', label:'Primary (env)', source:'env', createdAt:now, lastUsedAt:null });
+    if(ADMIN_TOKEN_2) seed.push({ id:'seed_secondary', token:ADMIN_TOKEN_2, role:'admin', label:'Secondary (env)', source:'env', createdAt:now, lastUsedAt:null });
+    try { fs.writeFileSync(TOK_FILE, JSON.stringify({ tokens:seed, updatedAt:now }, null, 2)); } catch(e){}
+  }
 }
 ensureDataFiles();
 
@@ -133,12 +142,31 @@ function writeJsonArray(file, arr){
   fs.writeFileSync(file, JSON.stringify(arr, null, 2));
 }
 
+// Token store utilities
+function readTokenStore(){ try { return JSON.parse(fs.readFileSync(TOK_FILE,'utf8')); } catch(e){ return { tokens:[], updatedAt:null }; } }
+function writeTokenStore(store){ store.updatedAt=new Date().toISOString(); fs.writeFileSync(TOK_FILE, JSON.stringify(store,null,2)); }
+function genToken(){ return 'tok_'+require('crypto').randomBytes(24).toString('hex'); }
+
 function adminAuth(req,res,next){
-  if (!ADMIN_TOKEN && !ADMIN_TOKEN_2) return res.status(500).json({ error: 'ADMIN_TOKEN not configured on server' });
+  // Load tokens (file-backed); if file missing and no env tokens -> disabled.
+  if(!fs.existsSync(TOK_FILE) && !ADMIN_TOKEN && !ADMIN_TOKEN_2){
+    return res.status(500).json({ error:'ADMIN_TOKEN not configured on server' });
+  }
   const hdr = req.headers['authorization'] || '';
-  if (hdr === `Bearer ${ADMIN_TOKEN}` || (ADMIN_TOKEN_2 && hdr === `Bearer ${ADMIN_TOKEN_2}`)) return next();
-  return res.status(401).json({ error: 'Unauthorized' });
+  if(!hdr.startsWith('Bearer ')) return res.status(401).json({ error:'Unauthorized' });
+  const token = hdr.slice(7);
+  const store = readTokenStore();
+  const entry = store.tokens.find(t=> t.token===token);
+  if(!entry) return res.status(401).json({ error:'Unauthorized' });
+  entry.lastUsedAt = new Date().toISOString();
+  try { writeTokenStore(store); } catch(_){ }
+  req.authRole = entry.role || 'admin';
+  req.authTokenId = entry.id;
+  req.authTokenSource = entry.source;
+  next();
 }
+
+function requireAdmin(req,res,next){ if(req.authRole!=='admin') return res.status(403).json({ error:'forbidden' }); next(); }
 
 // Utility: basic ID generator (timestamp + random)
 function genId(prefix){ return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`; }
@@ -231,6 +259,35 @@ app.get('/api/admin/export', adminAuth, (req,res)=>{
   res.json({ exportedAt: new Date().toISOString(), version:1, categories, templates });
 });
 app.post('/api/admin/import', adminAuth, (req,res)=>{
+// --- Auth Token Management Endpoints (admin only) ---
+app.get('/api/admin/auth/tokens', adminAuth, requireAdmin, (req,res)=>{
+  const store = readTokenStore();
+  // Do not leak raw token strings; only metadata
+  res.json({ tokens: store.tokens.map(t=> ({ id:t.id, role:t.role, label:t.label, source:t.source, createdAt:t.createdAt, lastUsedAt:t.lastUsedAt })) });
+});
+app.post('/api/admin/auth/tokens', adminAuth, requireAdmin, (req,res)=>{
+  const { role='admin', label=null } = req.body || {};
+  if(!['admin','read'].includes(role)) return res.status(400).json({ error:'invalid role' });
+  const store = readTokenStore();
+  const tok = { id: genId('tok'), token: genToken(), role, label, source:'generated', createdAt:new Date().toISOString(), lastUsedAt:null };
+  store.tokens.push(tok); writeTokenStore(store);
+  res.json({ id: tok.id, token: tok.token, role: tok.role, label: tok.label });
+});
+app.post('/api/admin/auth/tokens/:id/reveal', adminAuth, requireAdmin, (req,res)=>{
+  const store = readTokenStore(); const t = store.tokens.find(x=> x.id===req.params.id); if(!t) return res.status(404).json({ error:'not found' });
+  res.json({ id:t.id, token:t.token, role:t.role, label:t.label });
+});
+app.post('/api/admin/auth/tokens/:id/rotate', adminAuth, requireAdmin, (req,res)=>{
+  const store = readTokenStore(); const t = store.tokens.find(x=> x.id===req.params.id); if(!t) return res.status(404).json({ error:'not found' });
+  if(t.source==='env') return res.status(400).json({ error:'cannot rotate env token (change env var instead)' });
+  const old = t.token; t.token = genToken(); t.lastUsedAt=null; writeTokenStore(store);
+  res.json({ id:t.id, newToken:t.token, oldTokenEndsWith: old.slice(-6) });
+});
+app.delete('/api/admin/auth/tokens/:id', adminAuth, requireAdmin, (req,res)=>{
+  const store = readTokenStore(); const idx = store.tokens.findIndex(x=> x.id===req.params.id); if(idx===-1) return res.status(404).json({ error:'not found' });
+  if(store.tokens[idx].source==='env') return res.status(400).json({ error:'cannot delete env token' });
+  store.tokens.splice(idx,1); writeTokenStore(store); res.json({ ok:true });
+});
   const { categories=[], templates=[] } = req.body || {};
   if (!Array.isArray(categories) || !Array.isArray(templates)) return res.status(400).json({ error: 'categories/templates must be arrays' });
   // naive merge (no de-dup beyond id uniqueness)
@@ -276,7 +333,7 @@ if (PUBLIC_TEMPLATES) {
 
 // Minimal helper front-end (static HTML) for quick manual testing (non-production UI)
 app.get('/admin', (req,res)=>{
-  if (!ADMIN_TOKEN && !ADMIN_TOKEN_2) return res.status(500).send('<h1>Admin disabled</h1><p>Set ADMIN_TOKEN in env.</p>');
+  if (!fs.existsSync(TOK_FILE) && !ADMIN_TOKEN && !ADMIN_TOKEN_2) return res.status(500).send('<h1>Admin disabled</h1><p>Set ADMIN_TOKEN in env.</p>');
   res.setHeader('Content-Type','text/html; charset=utf-8');
   res.end(`<!DOCTYPE html><html><head><title>Admin Studio</title><meta charset="utf-8"/><style>
   :root{--bg:#f6f8fa;--panel:#ffffff;--border:#d0d7de;--accent:#2563eb;--accent-hover:#1d4ed8;--accent-soft:#e0efff;--danger:#dc2626;--danger-bg:#fee2e2;--radius:10px;--text:#0f172a;--muted:#64748b;--green:#15803d;--green-bg:#dcfce7;}
@@ -365,6 +422,27 @@ app.get('/admin', (req,res)=>{
       <table id=tplTable><thead><tr><th style="width:24%">Name</th><th style="width:15%">Category</th><th style="width:18%">Vars</th><th style="width:10%">Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
     </section>
   </main>
+  <section class="panel" style="margin:20px;max-width:1200px;">
+    <h2 style="margin-top:0">Tokens <span class="pill">Auth</span></h2>
+    <div class="small">Generate, rotate, reveal and delete tokens. Env-seeded tokens (env) cannot be deleted or rotated here.</div>
+    <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;align-items:flex-start;">
+      <form id="newTokenForm" onsubmit="createToken(event)" style="background:#fff;border:1px solid var(--border);padding:12px 14px;border-radius:10px;display:flex;flex-direction:column;gap:8px;min-width:240px;">
+        <strong style="font-size:12px;letter-spacing:.5px;">New Token</strong>
+        <input name="label" placeholder="Label (optional)" style="font-size:12px;padding:6px 8px;">
+        <select name="role" style="font-size:12px;padding:6px 8px;">
+          <option value="admin">Admin (full)</option>
+          <option value="read">Read-only</option>
+        </select>
+        <button class="primary" style="font-size:12px;">Generate</button>
+      </form>
+      <div style="flex:1;min-width:340px;overflow:auto;">
+        <table id="tokTable" style="width:100%;border-collapse:separate;border-spacing:0;font-size:12px;">
+          <thead><tr><th style="text-align:left;">Label</th><th>Role</th><th>Created</th><th>Last Used</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
   <div id="tokenOverlay" style="position:fixed;inset:0;background:#0f172acc;display:none;align-items:center;justify-content:center;z-index:999;">
     <div style="background:#fff;padding:32px 34px;border-radius:16px;width:min(420px,90%);box-shadow:0 12px 40px -10px #0f172a66;position:relative;">
       <button onclick="closeTokenPanel()" style="position:absolute;top:8px;right:8px;border:none;background:#f1f5f9;border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;">✕</button>
@@ -397,10 +475,9 @@ app.get('/admin', (req,res)=>{
     function saveToken(){ const v=document.getElementById('tokenInput').value.trim(); if(!v){ alert('Token required'); return; } localStorage.setItem('ADMIN_TOKEN_CACHE',v); closeTokenPanel(); location.reload(); }
     (function initToken(){ let t=localStorage.getItem('ADMIN_TOKEN_CACHE')||''; if(!t){ openTokenPanel(); } })();
     document.addEventListener('keydown',e=>{ if(e.key==='t' && (e.metaKey||e.ctrlKey) && !document.getElementById('tokenOverlay').contains(document.activeElement)){ openTokenPanel(); } });
-  </script>
-  <div class=row>
-    <div class=col>
-      <h2>Categories</h2>
+  <script>
+  // Initialize TOKEN early (replaces old prompt approach)
+  let TOKEN = localStorage.getItem('ADMIN_TOKEN_CACHE') || '';
       <form id=catForm onsubmit="createCat(event)">
         <input name=name placeholder='Category name' required />
         <button>Add</button>
@@ -460,15 +537,38 @@ app.get('/admin', (req,res)=>{
     if(r.status===204) return null;
     return r.json();
   }
-  let cats=[], tpls=[], lastArchivedId=null, undoTimer=null;
+  let cats=[], tpls=[], lastArchivedId=null, undoTimer=null, tokenList=[];
   async function refresh(){
     try {
       cats = await api('/api/admin/categories');
       const all = document.getElementById('showArchived')?.checked ? '?all=1' : '';
       tpls = await api('/api/admin/templates'+all);
+      try { const tokMeta = await api('/api/admin/auth/tokens'); tokenList = tokMeta.tokens||[]; drawTokens(); } catch(_){ /* ignore non-admin read tokens */ }
       drawCats(); drawTpls(); document.getElementById('status').textContent='Loaded '+cats.length+' categories, '+tpls.length+' templates';
     } catch(e){ document.getElementById('status').textContent='Load error '+e.message; }
   }
+
+  function drawTokens(){
+    const tb=document.querySelector('#tokTable tbody'); if(!tb) return; tb.innerHTML='';
+    tokenList.forEach(t=>{
+      const tr=document.createElement('tr');
+      const pill='<span class="pill" style="background:'+(t.role==='admin'?'#e0efff':'#e2e8f0')+';color:'+(t.role==='admin'?'#0369a1':'#475569')+';">'+t.role+'</span>';
+      tr.innerHTML='<td>'+escapeHtml(t.label||'(no label)')+(t.source==='env'?' <span class="pill" title="Env token">env</span>':'')+'</td>'+
+        '<td style="text-align:center;">'+pill+'</td>'+
+        '<td>'+(t.createdAt? t.createdAt.split('T')[0]:'')+'</td>'+
+        '<td>'+(t.lastUsedAt? t.lastUsedAt.split('T')[0]:'—')+'</td>'+
+        '<td style="white-space:nowrap;display:flex;flex-wrap:wrap;gap:4px;">'+
+          '<button class="soft" onclick="revealToken(\''+t.id+'\')" title="Reveal & copy" '+(t.source==='env'?'':'')+'>Reveal</button>'+
+          (t.source!=='env'?'<button class="soft" onclick="rotateToken(\''+t.id+'\')" title="Rotate">Rotate</button>':'')+
+          (t.source!=='env'?'<button class="soft" onclick="deleteToken(\''+t.id+'\')" title="Delete">Del</button>':'')+
+        '</td>';
+      tb.appendChild(tr);
+    });
+  }
+  async function createToken(e){ e.preventDefault(); const fd=new FormData(e.target); const body={ role:fd.get('role'), label:fd.get('label')||null }; const r=await api('/api/admin/auth/tokens',{method:'POST',body:JSON.stringify(body)}); try{ await navigator.clipboard.writeText(r.token); toast('Generated & copied'); }catch(_){ alert('Token: '+r.token); } e.target.reset(); refresh(); }
+  async function revealToken(id){ const r=await api('/api/admin/auth/tokens/'+id+'/reveal',{method:'POST'}); try{ await navigator.clipboard.writeText(r.token); toast('Copied'); }catch(_){ alert('Token: '+r.token); } }
+  async function rotateToken(id){ const r=await api('/api/admin/auth/tokens/'+id+'/rotate',{method:'POST'}); try{ await navigator.clipboard.writeText(r.newToken); toast('Rotated & copied'); }catch(_){ alert('New token: '+r.newToken); } refresh(); }
+  async function deleteToken(id){ if(!confirm('Delete token?')) return; await api('/api/admin/auth/tokens/'+id,{method:'DELETE'}); refresh(); }
   function drawCats(){
     const tb = document.querySelector('#catTable tbody'); tb.innerHTML='';
     document.getElementById('tplCatSel').innerHTML='<option value="">(no category)</option>';
