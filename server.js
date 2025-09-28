@@ -314,7 +314,7 @@ app.get('/admin', (req,res)=>{
   kbd{background:#fff;border:1px solid var(--border);padding:2px 6px;border-radius:6px;font-size:10px;box-shadow:0 1px 0 #0f172a10;}
   .status-ok{color:var(--green);} .status-err{color:var(--danger);} .status-warn{color:#b45309;}
   </style></head><body>
-  <header class="top"><div class="flex"><h1>Admin Studio<span class="badge">v3+</span></h1></div><div class="hint">Shortcuts: <kbd>⌘/Ctrl+S</kbd> save · <kbd>/</kbd> search · <kbd>Esc</kbd> cancel</div></header>
+  <header class="top"><div class="flex"><h1>Admin Studio<span class="badge">v3+</span></h1></div><div class="hint">Shortcuts: <kbd>⌘/Ctrl+S</kbd> save · <kbd>/</kbd> search · <kbd>Esc</kbd> cancel · <a href="#" onclick="openTokenPanel();return false;">Change token</a></div></header>
   <div style="padding:0 22px 4px"><div id=status>Loading...</div></div>
   <main>
     <section class="panel" id="panel-cats">
@@ -365,8 +365,37 @@ app.get('/admin', (req,res)=>{
       <table id=tplTable><thead><tr><th style="width:24%">Name</th><th style="width:15%">Category</th><th style="width:18%">Vars</th><th style="width:10%">Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
     </section>
   </main>
+  <div id="tokenOverlay" style="position:fixed;inset:0;background:#0f172acc;display:none;align-items:center;justify-content:center;z-index:999;">
+    <div style="background:#fff;padding:32px 34px;border-radius:16px;width:min(420px,90%);box-shadow:0 12px 40px -10px #0f172a66;position:relative;">
+      <button onclick="closeTokenPanel()" style="position:absolute;top:8px;right:8px;border:none;background:#f1f5f9;border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;">✕</button>
+      <h2 style="margin-top:0;font-size:18px;">Admin Access</h2>
+      <p style="margin:4px 0 14px;font-size:13px;line-height:1.4;color:#475569;">Enter the current admin token. This is stored only in <code>localStorage</code> on this browser.</p>
+      <input id="tokenInput" type="password" placeholder="Paste admin token" style="width:100%;padding:10px 12px;font-size:14px;border:1px solid #d0d7de;border-radius:10px;" />
+      <div style="display:flex;gap:10px;margin-top:16px;">
+        <button class="primary" style="flex:1;" onclick="saveToken()">Use Token</button>
+        <button class="soft" type="button" onclick="resetToken()">Reset</button>
+      </div>
+      <details style="margin-top:18px;font-size:12px;color:#334155;">
+        <summary style="cursor:pointer;">Token rotation help</summary>
+        <ol style="margin:8px 0 0 18px;padding:0;line-height:1.5;">
+          <li>Add <code>ADMIN_TOKEN_2</code> alongside <code>ADMIN_TOKEN</code> on the server.</li>
+          <li>Restart server; both tokens now valid.</li>
+          <li>Distribute new token to admins; they use Change token.</li>
+          <li>Remove old token (move new to <code>ADMIN_TOKEN</code>, unset <code>ADMIN_TOKEN_2</code>), restart.</li>
+        </ol>
+      </details>
+    </div>
+  </div>
   <script>
-  <script>let TOKEN=localStorage.getItem('ADMIN_TOKEN_CACHE')||''; if(!TOKEN){ TOKEN=prompt('Admin token?'); if(TOKEN) localStorage.setItem('ADMIN_TOKEN_CACHE',TOKEN);} if(!TOKEN){ document.body.innerHTML='<h2>Token required</h2>'; }</script>
+  <script>
+    // Token overlay logic (replaces prompt)
+    function openTokenPanel(){ document.getElementById('tokenOverlay').style.display='flex'; setTimeout(()=>document.getElementById('tokenInput').focus(),30); }
+    function closeTokenPanel(){ document.getElementById('tokenOverlay').style.display='none'; }
+    function resetToken(){ localStorage.removeItem('ADMIN_TOKEN_CACHE'); document.getElementById('tokenInput').value=''; document.getElementById('tokenInput').focus(); }
+    function saveToken(){ const v=document.getElementById('tokenInput').value.trim(); if(!v){ alert('Token required'); return; } localStorage.setItem('ADMIN_TOKEN_CACHE',v); closeTokenPanel(); location.reload(); }
+    (function initToken(){ let t=localStorage.getItem('ADMIN_TOKEN_CACHE')||''; if(!t){ openTokenPanel(); } })();
+    document.addEventListener('keydown',e=>{ if(e.key==='t' && (e.metaKey||e.ctrlKey) && !document.getElementById('tokenOverlay').contains(document.activeElement)){ openTokenPanel(); } });
+  </script>
   <div class=row>
     <div class=col>
       <h2>Categories</h2>
