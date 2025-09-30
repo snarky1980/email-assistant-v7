@@ -1,0 +1,63 @@
+name: Verify Pages & Release
+
+on:
+  push:
+    branches: [ gh-pages ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify-build:
+    name: Verify static assets
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/gh-pages'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: List root
+        run: ls -1 || true
+      - name: Check required assets
+        run: |
+          REQUIRED=(index.html assets/var-popup-integrated.js assets/lumen-logo.svg assets/index-D0Ogn3lF.css)
+          missing=0
+          for f in "${REQUIRED[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error file=$f::Missing required asset: $f"; missing=1; fi
+          done
+          if [ $missing -ne 0 ]; then
+            echo "One or more required assets are missing."; exit 1; fi
+      - name: Report version
+        run: |
+          grep -E "VAR_POPUP_SCRIPT_VERSION|v1\.5\.3" -n assets/var-popup-integrated.js || echo 'Version string check: (non-blocking)'
+
+  release:
+    name: Create or update release for tag
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Extract tag
+        id: vars
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - name: Generate release notes (basic)
+        id: notes
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          BODY=$(awk '/^## \['${TAG#v}'\]/{flag=1;next}/^## \[/{flag=0}flag' CHANGELOG.md | sed 's/^### /#### /')
+          echo "body<<'EOF'" >> $GITHUB_OUTPUT
+          echo "${BODY:-Release ${TAG}}" >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+      - name: Create or Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.tag }}
+          body: ${{ steps.notes.outputs.body }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,6 +10,8 @@
   <sub><code>var-popup-integrated.js</code> v1.5.3 (magnetic snap + bilingual docs)</sub>
 </div>
 
+> **Migration Notice:** This repository (v6 lineage) is in maintenance mode. Active development and future features (rich text, snippets, Outlook automation) continue in **[email-assistant-v7](https://github.com/snarky1980/email-assistant-v7)**. Submit new issues and pull requests there. Security patches will still be applied here if needed.
+
 ---
 
 ## 1. Overview
