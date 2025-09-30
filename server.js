@@ -49,6 +49,14 @@ app.use((req,res,next)=>{ res.setHeader('X-App-Server','email-assistant-v6'); ne
 // Smart cache headers: HTML no-store, hashed assets long cache
 app.use((req,res,next)=>{
   const p = req.path;
+  if(p === '/favicon.ico') {
+    res.setHeader('Cache-Control','no-store, must-revalidate');
+  }
+  // Always serve the popup integration script fresh (iterated frequently during UX polishing)
+  if(p === '/assets/var-popup-integrated.js'){
+    res.setHeader('Cache-Control','no-store, must-revalidate');
+    res.setHeader('X-Popup-NoCache','1');
+  }
   if (p === '/' || p.endsWith('.html')) {
     res.setHeader('Cache-Control','no-store, must-revalidate');
   } else if (/\.(?:js|css|woff2?|png|jpg|jpeg|gif|svg)$/i.test(p)) {
@@ -146,6 +154,21 @@ function writeJsonArray(file, arr){
 function readTokenStore(){ try { return JSON.parse(fs.readFileSync(TOK_FILE,'utf8')); } catch(e){ return { tokens:[], updatedAt:null }; } }
 function writeTokenStore(store){ store.updatedAt=new Date().toISOString(); fs.writeFileSync(TOK_FILE, JSON.stringify(store,null,2)); }
 function genToken(){ return 'tok_'+require('crypto').randomBytes(24).toString('hex'); }
+
+// Ensure env tokens always present in token store (in case file was created earlier then env changed)
+function syncEnvTokensIntoStore(){
+  const store = readTokenStore();
+  const byToken = new Map(store.tokens.map(t=>[t.token,t]));
+  const now = new Date().toISOString();
+  if(ADMIN_TOKEN && !store.tokens.some(t=> t.token===ADMIN_TOKEN)){
+    store.tokens.push({ id:'seed_primary', token:ADMIN_TOKEN, role:'admin', label:'Primary (env)', source:'env', createdAt:now, lastUsedAt:null });
+  }
+  if(ADMIN_TOKEN_2 && !store.tokens.some(t=> t.token===ADMIN_TOKEN_2)){
+    store.tokens.push({ id:'seed_secondary', token:ADMIN_TOKEN_2, role:'admin', label:'Secondary (env)', source:'env', createdAt:now, lastUsedAt:null });
+  }
+  if(store.tokens.length !== byToken.size) writeTokenStore(store);
+}
+syncEnvTokensIntoStore();
 
 function adminAuth(req,res,next){
   // Load tokens (file-backed); if file missing and no env tokens -> disabled.
@@ -259,11 +282,27 @@ app.get('/api/admin/export', adminAuth, (req,res)=>{
   res.json({ exportedAt: new Date().toISOString(), version:1, categories, templates });
 });
 app.post('/api/admin/import', adminAuth, (req,res)=>{
+  const { categories=[], templates=[] } = req.body || {};
+  if (!Array.isArray(categories) || !Array.isArray(templates)) return res.status(400).json({ error: 'categories/templates must be arrays' });
+  const existingCats = readJsonArray(CAT_FILE);
+  const existingTpls = readJsonArray(TPL_FILE);
+  const catIds = new Set(existingCats.map(c=>c.id));
+  for (const c of categories){ if (!catIds.has(c.id)) existingCats.push(c); }
+  const tplIds = new Set(existingTpls.map(t=>t.id));
+  for (const t of templates){ if (!tplIds.has(t.id)) existingTpls.push(t); }
+  writeJsonArray(CAT_FILE, existingCats);
+  writeJsonArray(TPL_FILE, existingTpls);
+  res.json({ ok:true, categories: existingCats.length, templates: existingTpls.length });
+});
+
 // --- Auth Token Management Endpoints (admin only) ---
 app.get('/api/admin/auth/tokens', adminAuth, requireAdmin, (req,res)=>{
   const store = readTokenStore();
-  // Do not leak raw token strings; only metadata
   res.json({ tokens: store.tokens.map(t=> ({ id:t.id, role:t.role, label:t.label, source:t.source, createdAt:t.createdAt, lastUsedAt:t.lastUsedAt })) });
+});
+// Lightweight auth check / diagnostics
+app.get('/api/admin/auth/check', adminAuth, (req,res)=>{
+  res.json({ ok:true, role:req.authRole, tokenId:req.authTokenId, source:req.authTokenSource, time:new Date().toISOString() });
 });
 app.post('/api/admin/auth/tokens', adminAuth, requireAdmin, (req,res)=>{
   const { role='admin', label=null } = req.body || {};
@@ -288,27 +327,21 @@ app.delete('/api/admin/auth/tokens/:id', adminAuth, requireAdmin, (req,res)=>{
   if(store.tokens[idx].source==='env') return res.status(400).json({ error:'cannot delete env token' });
   store.tokens.splice(idx,1); writeTokenStore(store); res.json({ ok:true });
 });
-  const { categories=[], templates=[] } = req.body || {};
-  if (!Array.isArray(categories) || !Array.isArray(templates)) return res.status(400).json({ error: 'categories/templates must be arrays' });
-  // naive merge (no de-dup beyond id uniqueness)
-  const existingCats = readJsonArray(CAT_FILE);
-  const existingTpls = readJsonArray(TPL_FILE);
-  const catIds = new Set(existingCats.map(c=>c.id));
-  for (const c of categories){ if (!catIds.has(c.id)) existingCats.push(c); }
-  const tplIds = new Set(existingTpls.map(t=>t.id));
-  for (const t of templates){ if (!tplIds.has(t.id)) existingTpls.push(t); }
-  writeJsonArray(CAT_FILE, existingCats);
-  writeJsonArray(TPL_FILE, existingTpls);
-  res.json({ ok:true, categories: existingCats.length, templates: existingTpls.length });
-});
 
-// Variable extraction helper (curly syntax {{var}}). Returns unique variable names.
+// Variable extraction helper.
+// New primary syntax: <<VariableName>> (supports accented Latin letters) e.g. <<NuméroProjet>>
+// Backwards compatibility: also accept legacy {{var_name}} so old templates still work.
+// Returns unique variable names (raw text inside delimiters) preserving first-seen casing.
 function extractVariables(body){
   if (typeof body !== 'string') return [];
-  const re = /{{\s*([a-zA-Z0-9_\.\-]+)\s*}}/g; // allow dot & dash
-  const found = new Set();
-  let m; while ((m = re.exec(body))){ found.add(m[1]); }
-  return Array.from(found);
+  // Accented Latin range + basic word chars, dot & dash
+  const angled = /<<\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9_\.\-]+)\s*>>/g;
+  const curly  = /{{\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9_\.\-]+)\s*}}/g;
+  const found = new Map(); // lower -> original
+  let m;
+  while((m = angled.exec(body))){ const key=m[1]; const lower=key.toLowerCase(); if(!found.has(lower)) found.set(lower,key); }
+  while((m = curly.exec(body))){ const key=m[1]; const lower=key.toLowerCase(); if(!found.has(lower)) found.set(lower,key); }
+  return Array.from(found.values());
 }
 app.post('/api/admin/variables/extract', adminAuth, (req,res)=>{
   const { body='' } = req.body || {};
@@ -371,7 +404,7 @@ app.get('/admin', (req,res)=>{
   kbd{background:#fff;border:1px solid var(--border);padding:2px 6px;border-radius:6px;font-size:10px;box-shadow:0 1px 0 #0f172a10;}
   .status-ok{color:var(--green);} .status-err{color:var(--danger);} .status-warn{color:#b45309;}
   </style></head><body>
-  <header class="top"><div class="flex"><h1>Admin Studio<span class="badge">v3+</span></h1></div><div class="hint">Shortcuts: <kbd>⌘/Ctrl+S</kbd> save · <kbd>/</kbd> search · <kbd>Esc</kbd> cancel · <a href="#" onclick="openTokenPanel();return false;">Change token</a></div></header>
+  <header class="top"><div class="flex"><h1>Admin Studio<span class="badge">v3+</span></h1></div><div class="hint">Shortcuts: <kbd>⌘/Ctrl+S</kbd> save · <kbd>/</kbd> search · <kbd>Esc</kbd> cancel · <kbd>⇧+⌘/Ctrl+C</kbd> copy body · <a href="#" onclick="openTokenPanel();return false;">Change token</a></div></header>
   <div style="padding:0 22px 4px"><div id=status>Loading...</div></div>
   <main>
     <section class="panel" id="panel-cats">
@@ -398,9 +431,13 @@ app.get('/admin', (req,res)=>{
       <form id=tplForm onsubmit="saveTpl(event)" style="margin-top:4px;">
         <input type=hidden name=id />
         <input name=name placeholder='Template name' required />
-        <select name=categoryId id=tplCatSel><option value="">(no category)</option></select>
+        <div style='display:flex;gap:6px;align-items:center;'>
+          <select name=categoryId id=tplCatSel style='flex:1;'><option value="">(no category)</option></select>
+          <button type=button class=soft style='white-space:nowrap;' onclick="quickAddCategory()" title='Create new category'>+ Category</button>
+        </div>
         <textarea name=body id=tplBody placeholder='Body with {{variables}}'></textarea>
         <div class=flex style='flex-wrap:wrap;gap:6px;margin-top:6px;'>
+          <button type=button class=soft onclick="insertVarPlaceholder()" title='Insert a variable placeholder at cursor'>+Placeholder</button>
           <button type=button class=soft onclick="detectVars()">Detect Vars</button>
           <button type=button class=soft onclick="addEmptyVar()">Add Var</button>
           <button type=button class=soft onclick="clearVars()">Clear Vars</button>
@@ -418,7 +455,7 @@ app.get('/admin', (req,res)=>{
         </div>
         <div class="small" id="varSummary"></div>
       </form>
-      <div class=small>Use {{variable_name}} syntax, then Detect Vars. Unused/unknown variables highlighted.</div>
+  <div class=small>Use &lt;&lt;variable_name&gt;&gt; syntax (ex: &lt;&lt;NuméroProjet&gt;&gt;), then Detect Vars. Unused/unknown variables highlighted. {{legacy}} also still recognized.</div>
       <table id=tplTable><thead><tr><th style="width:24%">Name</th><th style="width:15%">Category</th><th style="width:18%">Vars</th><th style="width:10%">Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
     </section>
   </main>
@@ -467,6 +504,12 @@ app.get('/admin', (req,res)=>{
   <script>
   // --- Boot / Token Modal / Basic Error Guard ---
   let TOKEN = localStorage.getItem('ADMIN_TOKEN_CACHE') || '';
+  // URL param bootstrap (?token=XYZ) for first-time access or when UI stuck before modal interaction
+  try {
+    const usp=new URLSearchParams(location.search);
+    const urlTok=usp.get('token');
+    if(urlTok && !TOKEN){ TOKEN=urlTok; localStorage.setItem('ADMIN_TOKEN_CACHE',urlTok); history.replaceState({},'',location.pathname); }
+  } catch(_){ }
   function openTokenPanel(){ document.getElementById('tokenOverlay').style.display='flex'; setTimeout(()=>document.getElementById('tokenInput').focus(),30); }
   function closeTokenPanel(){ document.getElementById('tokenOverlay').style.display='none'; }
   function resetToken(){ localStorage.removeItem('ADMIN_TOKEN_CACHE'); document.getElementById('tokenInput').value=''; document.getElementById('tokenInput').focus(); }
@@ -477,49 +520,10 @@ app.get('/admin', (req,res)=>{
   window.addEventListener('error', ev=>{ const st=document.getElementById('status'); if(st) st.textContent='Error: '+ev.message; });
   window.addEventListener('unhandledrejection', ev=>{ const st=document.getElementById('status'); if(st) st.textContent='Promise error: '+(ev.reason&&ev.reason.message||ev.reason); });
   if(!TOKEN){ const st=document.getElementById('status'); if(st) st.innerHTML='First time? 1) In terminal run <code>npm run set-admin-token</code>. 2) Restart server. 3) Paste token above.'; }
-      <form id=catForm onsubmit="createCat(event)">
-        <input name=name placeholder='Category name' required />
-        <button>Add</button>
-      </form>
-      <table id=catTable><thead><tr><th>Name</th><th>Actions</th></tr></thead><tbody></tbody></table>
-    </div>
-    <div class=col>
-      <h2>Templates</h2>
-      <div class=toolbar>
-        <input id=searchTpl placeholder='Search... (name/body)' style='flex:1;min-width:160px;'>
-        <select id=sortTpl>
-          <option value="name">Name</option>
-          <option value="createdAt">Created</option>
-          <option value="updatedAt">Updated</option>
-        </select>
-        <label style='font-size:11px;display:flex;align-items:center;gap:4px;'><input type=checkbox id=showArchived> Archived</label>
-        <button type=button onclick="doExport()">Export</button>
-        <label style='font-size:11px;'>Import <input type=file id=importFile style='font-size:10px;padding:2px;'></label>
-      </div>
-      <form id=tplForm onsubmit="saveTpl(event)">
-        <input type=hidden name=id />
-        <input name=name placeholder='Template name' required />
-        <select name=categoryId id=tplCatSel><option value="">(no category)</option></select>
-        <textarea name=body placeholder='Body with {{variables}}'></textarea>
-        <div style='margin:4px 0;'>
-          <button type=button onclick="detectVars()">Detect Vars</button>
-          <button type=button onclick="addEmptyVar()">Add Var</button>
-          <button type=button onclick="clearVars()">Clear Vars</button>
-          <button type=button onclick="previewTpl()">Preview</button>
-          <button type=button onclick="insertIntoEditor()">Insert → Editor</button>
-          <button type=button onclick="insertIntoAssistant()">Insert → Assistant</button>
-        </div>
-        <div id=varList></div>
-        <div id=preview hidden></div>
-        <div style='margin-top:6px;'>
-          <button id=saveBtn>Create</button>
-          <button type=button onclick="cancelEdit()" id=cancelBtn style='display:none;'>Cancel</button>
-        </div>
-      </form>
-      <div class=small>Use {{variable_name}} syntax, then Detect Vars. Variables hold description & sample.</div>
-      <table id=tplTable><thead><tr><th>Name</th><th>Category</th><th>Vars</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
-    </div>
-  </div>
+  else {
+    // Show a subtle progressing message while first fetch occurs
+    let dots=0; const st=document.getElementById('status'); const int=setInterval(()=>{ if(!st) return; st.textContent='Loading'+'.'.repeat(dots%4); dots++; if(dots>40) clearInterval(int); },450);
+  }
   // --- Existing logic (extended) ---
   async function api(path, opts={}){
     opts.headers = Object.assign({}, opts.headers||{}, { 'Content-Type':'application/json', 'Authorization':'Bearer '+TOKEN });
@@ -630,14 +634,54 @@ app.get('/admin', (req,res)=>{
   function getVars(){ return Array.from(document.querySelectorAll('#varList .var-row')).map(r=>({ name:r.querySelector('.var-name').value.trim(), description:r.querySelector('.var-desc').value.trim()||undefined, sample:r.querySelector('.var-sample').value.trim()||undefined })).filter(v=>v.name); }
   function clearVars(){ document.getElementById('varList').innerHTML=''; }
   function addEmptyVar(){ addVarRow(''); }
+  async function quickAddCategory(){
+    const name = prompt('New category name:');
+    if(!name) return;
+    try {
+      await api('/api/admin/categories',{method:'POST',body:JSON.stringify({name})});
+      // Refresh categories only (avoid flicker on templates if possible)
+      cats = await api('/api/admin/categories');
+      drawCats();
+      // Select the newly added category in form
+      const newly = cats.find(c=> c.name.toLowerCase()===name.toLowerCase());
+      if(newly){ document.getElementById('tplCatSel').value=newly.id; }
+      document.getElementById('status').textContent='Category added';
+      setTimeout(()=>{ const st=document.getElementById('status'); if(st.textContent==='Category added') st.textContent=''; },1800);
+    } catch(e){ alert('Create category error '+e.message); }
+  }
   async function detectVars(){
     const body = document.getElementById('tplForm').body.value; if(!body) return;
-    try { const r = await api('/api/admin/variables/extract',{method:'POST',body:JSON.stringify({body})}); const existing=getVars(); r.variables.forEach(v=>{ if(!existing.some(e=> e.name.toLowerCase()===v.toLowerCase())) addVarRow(v); }); } catch(e){ alert('Detect error '+e.message); }
+    try {
+      const r = await api('/api/admin/variables/extract',{method:'POST',body:JSON.stringify({body})});
+      const existing=getVars();
+      r.variables.forEach(v=>{ if(!existing.some(e=> e.name.toLowerCase()===v.toLowerCase())) addVarRow(v); });
+    } catch(e){ alert('Detect error '+e.message); }
+  }
+  function insertVarPlaceholder(){
+    const ta=document.getElementById('tplBody');
+    let name=prompt('Variable name (letters/numbers, accents allowed, no spaces):');
+    if(!name) return;
+    name=name.trim().replace(/\s+/g,'');
+    if(!name) return;
+    const syntax='<<'+name+'>>';
+    const start=ta.selectionStart||0, end=ta.selectionEnd||0;
+    const val=ta.value;
+    ta.value = val.slice(0,start)+syntax+val.slice(end);
+    ta.selectionStart=ta.selectionEnd=start+syntax.length;
+    ta.focus();
+    detectVars();
   }
   function previewTpl(){
     const f = document.getElementById('tplForm');
     let text = f.body.value;
-    getVars().forEach(v=>{ const sample = v.sample || '['+v.name+']'; const re = new RegExp('{{\\s*'+v.name.replace(/[-\\^$*+?.()|[\]{}]/g,'\\$&')+'\\s*}}','g'); text = text.replace(re, sample); });
+    // Substitute both <<Var>> and legacy {{var}} forms
+    getVars().forEach(v=>{
+      const sample = v.sample || '['+v.name+']';
+      const esc = v.name.replace(/[-\\^$*+?.()|[\]{}]/g,'\\$&');
+      const reAngled = new RegExp('<<\\s*'+esc+'\\s*>>','g');
+      const reCurly  = new RegExp('{{\\s*'+esc+'\\s*}}','g');
+      text = text.replace(reAngled, sample).replace(reCurly, sample);
+    });
     const box = document.getElementById('preview'); box.hidden=false; box.textContent=text;
     validateVars();
   }
@@ -656,7 +700,9 @@ app.get('/admin', (req,res)=>{
   function toast(msg){ const st=document.getElementById('status'); st.textContent=msg; setTimeout(()=>{ if(st.textContent===msg) st.textContent=''; },2000); }
   function validateVars(){
     const body=document.getElementById('tplForm').body.value;
-    const re=/{{\s*([a-zA-Z0-9_\.\-]+)\s*}}/g; const found=new Set(); let m; while((m=re.exec(body))) found.add(m[1].toLowerCase());
+    const reAngled=/<<\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9_\.\-]+)\s*>>/g;
+    const reCurly=/{{\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9_\.\-]+)\s*}}/g;
+    const found=new Set(); let m; while((m=reAngled.exec(body))) found.add(m[1].toLowerCase()); while((m=reCurly.exec(body))) found.add(m[1].toLowerCase());
     const rows=document.querySelectorAll('#varList .var-row'); let unused=0; rows.forEach(r=>{ const n=r.querySelector('.var-name').value.trim(); const used=found.has(n.toLowerCase()); r.classList.toggle('fade', !used && n); if(!used && n) unused++; });
     const unknown=[...found].filter(f=> ![...rows].some(r=> r.querySelector('.var-name').value.trim().toLowerCase()===f));
     document.getElementById('varSummary').innerHTML = (unknown.length?'<span class= status-err>'+unknown.length+' unknown</span> ':'') + (unused?'<span class=status-warn>'+unused+' unused</span> ':'') + '<span class=status-ok>'+found.size+' used</span>';
@@ -668,6 +714,12 @@ app.get('/admin', (req,res)=>{
     if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='s'){ const f=document.getElementById('tplForm'); if(f){ e.preventDefault(); f.requestSubmit(); }}
     if(e.key==='/' && document.activeElement.tagName!=='INPUT' && document.activeElement.tagName!=='TEXTAREA'){ e.preventDefault(); document.getElementById('searchTpl').focus(); }
     if(e.key==='Escape'){ const cancel=document.getElementById('cancelBtn'); if(cancel.style.display!=='none') cancelEdit(); }
+    if((e.metaKey||e.ctrlKey) && e.shiftKey && e.key.toLowerCase()==='c'){ // copy body shortcut
+      const b=document.getElementById('tplForm')?.body?.value || '';
+      if(!b) return;
+      e.preventDefault();
+      navigator.clipboard.writeText(b).then(()=> toast('Body copied')).catch(()=>{ /* ignore */ });
+    }
   });
   // Restore last template focus by name (best effort)
   const lastName=localStorage.getItem('ADMIN_LAST_TEMPLATE_NAME'); if(lastName){ setTimeout(()=>{ const t=tpls.find(x=>x.name===lastName); if(t) beginEdit(t.id); },1500); }
@@ -682,6 +734,9 @@ app.get('/admin', (req,res)=>{
   document.getElementById('importFile').addEventListener('change', async e=>{ const file=e.target.files[0]; if(!file) return; try { const txt=await file.text(); const json=JSON.parse(txt); await api('/api/admin/import',{method:'POST',body:JSON.stringify(json)}); document.getElementById('status').textContent='Imported'; refresh(); } catch(err){ alert('Import error '+err.message); } finally { e.target.value=''; } });
   document.getElementById('searchTpl').addEventListener('input', drawTpls); document.getElementById('sortTpl').addEventListener('change', drawTpls); document.getElementById('showArchived').addEventListener('change', refresh); document.getElementById('tplForm').body.addEventListener('input', ()=>{ if(!document.getElementById('preview').hidden) previewTpl(); });
   refresh();
+  // Early auth check to surface cause if stuck
+  (async()=>{ try{ const r=await api('/api/admin/auth/check'); const st=document.getElementById('status'); if(st && st.textContent.startsWith('Loading')) st.textContent='Auth OK ('+r.role+') – loading data...'; }
+    catch(e){ const st=document.getElementById('status'); if(st) st.textContent='Auth failed: '+e.message; } })();
   </script>
   </body></html>`);
 });

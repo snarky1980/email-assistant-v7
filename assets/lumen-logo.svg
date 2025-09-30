@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Lumen Logo: stylized light burst with negative-space L -->
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0fa3c4"/>
+      <stop offset="55%" stop-color="#0d8094"/>
+      <stop offset="100%" stop-color="#074b58"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0f172a"/>
+  <!-- Light rays background -->
+  <g stroke="url(#g)" stroke-width="2" stroke-linecap="round" opacity="0.55">
+    <path d="M32 6v10"/>
+    <path d="M32 48v10"/>
+    <path d="M6 32h10"/>
+    <path d="M48 32h10"/>
+    <path d="M14 14l7 7"/>
+    <path d="M43 43l7 7"/>
+    <path d="M50 14l-7 7"/>
+    <path d="M21 43l-7 7"/>
+  </g>
+  <!-- Stylized L (negative cut simulated by drawing dark overlay then inner stroke) -->
+  <path d="M24 16a2 2 0 0 0-2 2v28c0 1.1.9 2 2 2h18a2 2 0 0 0 0-4H28V18a2 2 0 0 0-2-2h-2Z" fill="url(#g)" filter="url(#glow)"/>
+  <path d="M24 16a2 2 0 0 0-2 2v28c0 1.1.9 2 2 2h18" fill="none" stroke="#e6f9fc" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>
+  <!-- Inner highlight -->
+  <path d="M26 20v22h14" fill="none" stroke="#b8ecf5" stroke-width="1.2" stroke-linecap="round" opacity="0.75"/>
+  <title>Lumen</title>
+</svg>

@@ -1,0 +1,14 @@
+{
+  "tokens": [
+    {
+      "id": "seed_primary",
+      "token": "b5dac523db5e49b350d689ed19f21fec147d26b3c95cb048a50986fb14dcf8ee",
+      "role": "admin",
+      "label": "Primary (env)",
+      "source": "env",
+      "createdAt": "2025-09-28T13:10:55.282Z",
+      "lastUsedAt": "2025-09-29T12:13:46.204Z"
+    }
+  ],
+  "updatedAt": "2025-09-29T12:13:46.204Z"
+}

@@ -148,7 +148,14 @@
     };
 
     el.querySelector('#ai-merge').onclick = () => { substituteVars(tplSel, subj, body, varsGrid); };
-    el.querySelector('#ai-reset').onclick = () => { subj.value=''; body.value=''; result.textContent=''; status.textContent='Réinitialisé'; };
+    const resetBtn = el.querySelector('#ai-reset');
+    resetBtn.style.transition='background .2s, filter .2s';
+    resetBtn.onmouseenter=()=>{ resetBtn.style.filter='brightness(1.15)'; };
+    resetBtn.onmouseleave=()=>{ resetBtn.style.filter=''; };
+    resetBtn.onclick = () => {
+      if(!confirm('Confirmer la réinitialisation ?\n(This will clear Sujet, Corps et Résultat IA)')) return;
+      subj.value=''; body.value=''; result.textContent=''; status.textContent='Réinitialisé';
+    };
     el.querySelector('#ai-copy').onclick = () => {
       const merged = subj.value + '\n\n' + body.value; navigator.clipboard.writeText(merged).then(()=>{ status.textContent='Copié'; });
     };
