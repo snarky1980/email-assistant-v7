@@ -1,7 +1,13 @@
 <div align="center">
-  <h1>Email Assistant v6</h1>
+  <h1>Email Assistant v7 (Transition from v6)</h1>
   <p>Template & variable manager + AI enhancement layer with a secure OpenAI proxy.</p>
-  <sub><code>var-popup-integrated.js</code> v1.5.0 (production cleanup)</sub>
+  <p>
+    <a href="https://snarky1980.github.io/email-assistant-v7/"><img alt="GitHub Pages" src="https://img.shields.io/badge/site-live-green?style=flat-square"></a>
+    <a href="https://github.com/snarky1980/email-assistant-v7/releases/tag/v1.5.3"><img alt="Version" src="https://img.shields.io/badge/version-v1.5.3-teal?style=flat-square"></a>
+    <img alt="Status" src="https://img.shields.io/badge/status-active-success?style=flat-square">
+    <img alt="Language" src="https://img.shields.io/badge/i18n-FR%20%7C%20EN-blue?style=flat-square">
+  </p>
+  <sub><code>var-popup-integrated.js</code> v1.5.3 (magnetic snap + bilingual docs)</sub>
 </div>
 
 ---
