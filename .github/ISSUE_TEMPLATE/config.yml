@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "Active Development Repo (v7)"
+    url: https://github.com/snarky1980/email-assistant-v7
+    about: "Open issues and feature requests in the v7 repository."

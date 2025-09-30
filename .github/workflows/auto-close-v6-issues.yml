@@ -1,0 +1,38 @@
+name: Auto-Close New Issues (v6 Migration)
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  close-new:
+    if: github.repository == 'snarky1980/email-assistant-v6'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-close unless explicitly v6-only
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const v6Only = issue.labels.some(l => l.name.toLowerCase() === 'v6-only');
+            if (v6Only) {
+              core.info('Issue marked v6-only; leaving open.');
+              return;
+            }
+            const body = `👋 This repository (v6) is in maintenance mode.\n\nPlease re-open this issue in **email-assistant-v7**: https://github.com/snarky1980/email-assistant-v7/issues/new \n\nIf you believe this is strictly v6-only, comment with \`needs-v6\` and add the **v6-only** label, then re-open.`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              state: 'closed'
+            });
