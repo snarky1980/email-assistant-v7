@@ -1,6 +1,6 @@
 # Feature & Capability Map (User-Centric Guide)
 
-A concise, skimmable master list of everything the Email Writing Assistant ("Lumen") offers today—plus what’s coming next. Use this as a map for discovery, onboarding, training, or quick reference. Nearly every bullet is intentionally action-oriented or outcome-focused.
+A concise, skimmable master list of everything the Email Writing Assistant offers today—plus what’s coming next. Use this as a map for discovery, onboarding, training, or quick reference. Nearly every bullet is intentionally action-oriented or outcome-focused.
 
 ---
 ## Table of Contents

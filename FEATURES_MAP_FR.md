@@ -1,6 +1,6 @@
 # Carte des Fonctionnalités (Guide Centré Utilisateur)
 
-Version française complète de la carte fonctionnelle de l'assistant de rédaction de courriels « Lumen ». Référence rapide pour la formation, l'onboarding et l'exploitation quotidienne.
+Version française complète de la carte fonctionnelle de l'assistant de rédaction de courriels. Référence rapide pour la formation, l'onboarding et l'exploitation quotidienne.
 
 ---
 ## Table des matières

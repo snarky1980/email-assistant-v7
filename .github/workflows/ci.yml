@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Unit & integration tests
+        run: npm test
+      - name: Start server & smoke endpoints
+        run: |
+          nohup npm start &
+          for i in {1..25}; do
+            sleep 1
+            curl -fsS http://localhost:3000/api/ping && break || true
+          done
+            curl -fsS http://localhost:3000/api/health
+      - name: Smoke test OpenAI endpoint (expect failure without key)
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"prompt":"hi"}' http://localhost:3000/api/openai || true)
+          echo HTTP_CODE=$code
+          if [ "$code" -ne 500 ]; then echo "Unexpected status (wanted 500 since no OPENAI_API_KEY)"; exit 1; fi
+      - name: Coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: ignore
+      - name: List workspace files (debug)
+        if: always()
+        run: ls -1 . | head

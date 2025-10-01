@@ -1,10 +1,10 @@
-# FAQ – Lumen Email Writing Assistant (EN)
+# FAQ – Email Writing Assistant (EN)
 
 A conversational Q&A reference for common questions. Pair this with `FEATURES_MAP.md` for maximum clarity.
 
 ---
 ## General
-**Q: What is Lumen?**  
+**Q: What is this assistant?**  
 A: A bilingual (FR/EN) assistant that centralizes reusable email templates, dynamic variables, and optional AI rewriting to speed up drafting while preserving precision.
 
 **Q: Who is it for?**  

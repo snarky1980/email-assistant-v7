@@ -1,10 +1,10 @@
-# FAQ – Assistant de Rédaction de Courriels Lumen (FR)
+# FAQ – Assistant de Rédaction de Courriels (FR)
 
 FAQ conversationnelle pour les questions courantes. Complément à `FEATURES_MAP_FR.md`.
 
 ---
 ## Général
-**Q : Qu’est-ce que Lumen ?**  
+**Q : Qu’est-ce que cet assistant ?**  
 R : Un assistant bilingue (FR/EN) centralisant des modèles de courriels réutilisables avec variables dynamiques et réécriture assistée par IA.
 
 **Q : Pour qui ?**  

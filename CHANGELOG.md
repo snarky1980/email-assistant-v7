@@ -13,7 +13,7 @@ All notable changes to this project will be documented here. The format loosely 
 
 ### Changed
 - Popup script refactored to clamp movement precisely at banner boundary.
-- Favicon & branding assets replaced with Lumen identity (SVG/PNG/ICO + inline data URI fallback).
+- Favicon & branding assets replaced with project-specific identity (SVG/PNG/ICO + inline data URI fallback).
 - Improved reset action with confirmation modal.
 - LocalStorage key versioning to isolate layout/position persistence.
 

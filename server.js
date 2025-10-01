@@ -2,6 +2,11 @@ const express = require('express');
 const fetch = require('node-fetch');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+// New modular utilities
+const { extractVariables } = require('./lib/variables');
+const { readJsonArray, writeJsonArray, readTokenStore, writeTokenStore, genToken, hashToken, constantTimeEquals } = require('./lib/storage');
+const { log } = require('./lib/logger');
 require('dotenv').config();
 
 // --- Configuration ---
@@ -11,25 +16,31 @@ const HOST = process.env.HOST || '0.0.0.0';
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || process.env.ADMIN_API_TOKEN || null; // primary admin token
 const ADMIN_TOKEN_2 = process.env.ADMIN_TOKEN_2 || null; // optional secondary token (rotation)
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
 const TPL_FILE = path.join(DATA_DIR, 'templates.json');
 const CAT_FILE = path.join(DATA_DIR, 'categories.json');
 const TOK_FILE = path.join(DATA_DIR, 'admin_tokens.json');
-const LOG_FILE = process.env.LOG_FILE || 'server.log';
+// LOG_FILE now handled by logger module (env LOG_FILE)
 const ENABLE_HEARTBEAT = process.env.HEARTBEAT !== '0'; // default on
 const ENABLE_SELF_PING = process.env.SELF_PING === '1'; // opt‑in (could create extra noise)
 const LOG_REQUESTS = process.env.LOG_REQUESTS === '1';
 const ENABLE_CORS = process.env.ENABLE_CORS === '1';
 const PUBLIC_TEMPLATES = process.env.PUBLIC_TEMPLATES === '1'; // if enabled, exposes read-only public template list
 
-function log(...args){
-  const line = `[${new Date().toISOString()}] ${args.join(' ')}`;
-  console.log(line);
-  try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch(_) { /* ignore */ }
-}
+// Precompute index.html fingerprint for cache/version diagnostics
+const INDEX_PATH = path.join(__dirname,'index.html');
+let INDEX_SHA = 'na';
+let BUILD_MARKER = null;
+try {
+  const htmlBuf = fs.readFileSync(INDEX_PATH, 'utf8');
+  INDEX_SHA = crypto.createHash('sha256').update(htmlBuf).digest('hex').slice(0,16);
+  const m = htmlBuf.match(/<!--\s*build-marker:\s*([^>]+?)-->/i);
+  if(m) BUILD_MARKER = m[1].trim();
+} catch(_){}
+const SERVER_START_ISO = new Date().toISOString();
 
 if (!OPENAI_KEY) {
-  log('WARN','OPENAI_API_KEY is not set; /api/openai will return 500 until configured. Create a .env file (see .env.example) with OPENAI_API_KEY=your_key');
+  log('warn','OPENAI_API_KEY missing',{ hint:'Set in environment for /api/openai'});
 }
 
 // Optional CORS (only if explicitly enabled)
@@ -41,11 +52,73 @@ if (ENABLE_CORS) {
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  log('INFO','CORS enabled (Access-Control-Allow-Origin: *)');
+  log('info','CORS enabled',{ origin:'*' });
 }
 
 app.use(express.json({ limit: '1mb' }));
-app.use((req,res,next)=>{ res.setHeader('X-App-Server','email-assistant-v6'); next(); });
+
+// Basic request id + timing
+app.use((req,res,next)=>{
+  req.id = req.headers['x-request-id'] || Math.random().toString(36).slice(2,10);
+  const start = Date.now();
+  res.setHeader('X-Request-Id', req.id);
+  res.on('finish', ()=>{
+    if(LOG_REQUESTS){
+      log('req',{ id:req.id, method:req.method, url:req.originalUrl, status:res.statusCode, ms:Date.now()-start });
+    }
+  });
+  next();
+});
+
+// Security headers (baseline; CSP kept permissive due to inline admin HTML)
+app.use((req,res,next)=>{
+  res.setHeader('X-Frame-Options','SAMEORIGIN');
+  res.setHeader('X-Content-Type-Options','nosniff');
+  res.setHeader('Referrer-Policy','no-referrer');
+  res.setHeader('Permissions-Policy','interest-cohort=()');
+  // TODO tighten CSP by moving inline admin HTML to external file
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'");
+  if(process.env.FORCE_HTTPS==='1' && req.headers['x-forwarded-proto']!=='https'){
+    // Optionally redirect to https when behind proxy
+    return res.redirect(301, 'https://'+req.headers.host+req.originalUrl);
+  }
+  // HSTS only if explicitly enabled (avoid local dev issues)
+  if(process.env.HSTS==='1'){
+    res.setHeader('Strict-Transport-Security','max-age=63072000; includeSubDomains; preload');
+  }
+  next();
+});
+
+// Simple in-memory rate limiter (per IP) — NOT suitable for multi-instance clustering
+const RL_WINDOW_MS = 60_000;
+const RL_MAX = parseInt(process.env.RATE_LIMIT_MAX || '120', 10); // default 120 req/min
+const rlStore = new Map();
+app.use((req,res,next)=>{
+  // Skip static assets & health endpoints for rate limiting
+  if(/\.(?:js|css|png|jpg|jpeg|svg|ico)$/.test(req.path) || req.path==='/api/ping' || req.path==='/api/health') return next();
+  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  let entry = rlStore.get(ip);
+  if(!entry || now - entry.start > RL_WINDOW_MS){ entry = { start: now, count: 0 }; rlStore.set(ip, entry); }
+  entry.count++;
+  if(entry.count > RL_MAX){
+    res.setHeader('Retry-After', Math.ceil((entry.start + RL_WINDOW_MS - now)/1000));
+    return res.status(429).json({ error: 'rate_limited', retryAfterMs: (entry.start + RL_WINDOW_MS - now) });
+  }
+  next();
+});
+app.use((req,res,next)=>{ 
+  // Updated identifier to reflect repository version
+  res.setHeader('X-App-Server','email-assistant-v7'); 
+  res.setHeader('X-App-Index-Sha', INDEX_SHA); 
+  if(BUILD_MARKER){
+    res.setHeader('X-Build-Marker', BUILD_MARKER);
+    const parts = BUILD_MARKER.split(/\s+/);
+    const maybeHash = parts[parts.length-1];
+    if(/^[0-9a-f]{4,12}$/i.test(maybeHash)) res.setHeader('X-Revision', maybeHash);
+  }
+  next(); 
+});
 // Smart cache headers: HTML no-store, hashed assets long cache
 app.use((req,res,next)=>{
   const p = req.path;
@@ -76,7 +149,7 @@ if (LOG_REQUESTS) {
   app.use((req,res,next)=>{
     const start = Date.now();
     res.on('finish', ()=>{
-      log('REQ', req.method, req.originalUrl, res.statusCode, (Date.now()-start)+'ms', 'UA='+(req.headers['user-agent']||'n/a')); 
+      log('req_detail',{ method:req.method, url:req.originalUrl, status:res.statusCode, ms:Date.now()-start, ua:(req.headers['user-agent']||'n/a') }); 
     });
     next();
   });
@@ -84,6 +157,13 @@ if (LOG_REQUESTS) {
 
 // Basic health endpoint
 app.get('/api/ping', (req,res)=>{ res.json({ ok:true, time: Date.now(), pid: process.pid }); });
+// Lightweight unauthenticated liveness + counts (does not expose sensitive data)
+app.get('/api/health', (req,res)=>{
+  let templateCount = 0, categoryCount = 0;
+  try { templateCount = readJsonArray(TPL_FILE).filter(t=> !t.deletedAt).length; } catch(_){}
+  try { categoryCount = readJsonArray(CAT_FILE).length; } catch(_){}
+  res.json({ ok:true, uptimeSec: Math.round(process.uptime()), templates: templateCount, categories: categoryCount, version: require('./package.json').version });
+});
 app.get('/api/diag', (req,res)=>{
   res.json({
     ok:true,
@@ -96,12 +176,31 @@ app.get('/api/diag', (req,res)=>{
   });
 });
 
+// Version / fingerprint endpoint to help confirm user sees latest deployment
+app.get('/api/version', (req,res)=>{
+  let title=null, marker=BUILD_MARKER;
+  try {
+    const html = fs.readFileSync(INDEX_PATH,'utf8');
+    const m = html.match(/<title>([^<]*)<\/title>/i); if(m) title = m[1];
+    if(!marker){ const mm = html.match(/<!--\s*build-marker:\s*([^>]+?)-->/i); if(mm) marker = mm[1].trim(); }
+  } catch(_){ }
+  res.json({
+    ok:true,
+    indexSha: INDEX_SHA,
+    buildMarker: marker,
+    title,
+    serverStartedAt: SERVER_START_ISO,
+    pid: process.pid,
+    version: require('./package.json').version
+  });
+});
+
 app.post('/api/openai', async (req, res) => {
   if (!OPENAI_KEY) return res.status(500).json({ error: 'Server missing OPENAI_API_KEY' });
   const { prompt, feature } = req.body || {};
   if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'Missing prompt' });
   try {
-    log('PROMPT_LEN', feature||'generic', 'chars='+prompt.length);
+  log('openai_prompt',{ feature: feature||'generic', chars: prompt.length });
     const messages = [{ role: 'user', content: prompt }];
     const body = { model: 'gpt-3.5-turbo', messages, max_tokens: 800 }; // simple forward
     const started = Date.now();
@@ -118,9 +217,9 @@ app.post('/api/openai', async (req, res) => {
       if (agg.length) result = agg.join('\n\n');
     }
     res.json({ result, latencyMs: ms, feature, usage: data?.usage, error: data.error?.message });
-    log('OPENAI', feature || 'generic', ms+'ms', result ? 'ok' : 'empty');
+    log('openai_resp',{ feature: feature||'generic', ms, hasResult: !!result });
   } catch (err) {
-    log('ERROR','/api/openai', err.message);
+    log('error','openai_call_failed',{ error: err.message });
     res.status(500).json({ error: String(err) });
   }
 });
@@ -132,57 +231,62 @@ function ensureDataFiles(){
   for (const f of [TPL_FILE,CAT_FILE]){
     try { if (!fs.existsSync(f)) fs.writeFileSync(f,'[]','utf8'); } catch(e){}
   }
-  // Initialize token file if missing (seeding env tokens if present)
   if(!fs.existsSync(TOK_FILE)){
     const now=new Date().toISOString();
     const seed=[];
-    if(ADMIN_TOKEN) seed.push({ id:'seed_primary', token:ADMIN_TOKEN, role:'admin', label:'Primary (env)', source:'env', createdAt:now, lastUsedAt:null });
-    if(ADMIN_TOKEN_2) seed.push({ id:'seed_secondary', token:ADMIN_TOKEN_2, role:'admin', label:'Secondary (env)', source:'env', createdAt:now, lastUsedAt:null });
+    if(ADMIN_TOKEN) seed.push({ id:'seed_primary', hash:hashToken(ADMIN_TOKEN), role:'admin', label:'Primary (env)', source:'env', createdAt:now, lastUsedAt:null });
+    if(ADMIN_TOKEN_2) seed.push({ id:'seed_secondary', hash:hashToken(ADMIN_TOKEN_2), role:'admin', label:'Secondary (env)', source:'env', createdAt:now, lastUsedAt:null });
     try { fs.writeFileSync(TOK_FILE, JSON.stringify({ tokens:seed, updatedAt:now }, null, 2)); } catch(e){}
   }
 }
 ensureDataFiles();
 
-function readJsonArray(file){
-  try { return JSON.parse(fs.readFileSync(file,'utf8')); } catch(e){ return []; }
-}
-function writeJsonArray(file, arr){
-  fs.writeFileSync(file, JSON.stringify(arr, null, 2));
-}
-
-// Token store utilities
-function readTokenStore(){ try { return JSON.parse(fs.readFileSync(TOK_FILE,'utf8')); } catch(e){ return { tokens:[], updatedAt:null }; } }
-function writeTokenStore(store){ store.updatedAt=new Date().toISOString(); fs.writeFileSync(TOK_FILE, JSON.stringify(store,null,2)); }
-function genToken(){ return 'tok_'+require('crypto').randomBytes(24).toString('hex'); }
+// (Storage helpers now imported from ./lib/storage)
 
 // Ensure env tokens always present in token store (in case file was created earlier then env changed)
+function loadTokenStore(){
+  const store = readTokenStore(TOK_FILE);
+  let changed=false;
+  for(const t of store.tokens){
+    if(!t.hash && t.token){
+      // migrate legacy plaintext token -> hashed
+      t.hash = hashToken(t.token);
+      t.legacy = true; // mark legacy; reveal still possible once
+      changed=true;
+    }
+  }
+  if(changed) writeTokenStore(TOK_FILE, store);
+  return store;
+}
 function syncEnvTokensIntoStore(){
-  const store = readTokenStore();
-  const byToken = new Map(store.tokens.map(t=>[t.token,t]));
-  const now = new Date().toISOString();
-  if(ADMIN_TOKEN && !store.tokens.some(t=> t.token===ADMIN_TOKEN)){
-    store.tokens.push({ id:'seed_primary', token:ADMIN_TOKEN, role:'admin', label:'Primary (env)', source:'env', createdAt:now, lastUsedAt:null });
+  const store = loadTokenStore();
+  const envHashes = new Set([ADMIN_TOKEN && hashToken(ADMIN_TOKEN), ADMIN_TOKEN_2 && hashToken(ADMIN_TOKEN_2)].filter(Boolean));
+  const existingHashes = new Set(store.tokens.map(t=> t.hash));
+  const now=new Date().toISOString();
+  if(ADMIN_TOKEN && !existingHashes.has(hashToken(ADMIN_TOKEN))){
+    store.tokens.push({ id:'seed_primary', hash:hashToken(ADMIN_TOKEN), role:'admin', label:'Primary (env)', source:'env', createdAt:now, lastUsedAt:null });
   }
-  if(ADMIN_TOKEN_2 && !store.tokens.some(t=> t.token===ADMIN_TOKEN_2)){
-    store.tokens.push({ id:'seed_secondary', token:ADMIN_TOKEN_2, role:'admin', label:'Secondary (env)', source:'env', createdAt:now, lastUsedAt:null });
+  if(ADMIN_TOKEN_2 && !existingHashes.has(hashToken(ADMIN_TOKEN_2))){
+    store.tokens.push({ id:'seed_secondary', hash:hashToken(ADMIN_TOKEN_2), role:'admin', label:'Secondary (env)', source:'env', createdAt:now, lastUsedAt:null });
   }
-  if(store.tokens.length !== byToken.size) writeTokenStore(store);
+  // Remove env tokens no longer present (optional: keep - we keep for stability)
+  writeTokenStore(TOK_FILE, store);
 }
 syncEnvTokensIntoStore();
 
 function adminAuth(req,res,next){
-  // Load tokens (file-backed); if file missing and no env tokens -> disabled.
   if(!fs.existsSync(TOK_FILE) && !ADMIN_TOKEN && !ADMIN_TOKEN_2){
     return res.status(500).json({ error:'ADMIN_TOKEN not configured on server' });
   }
   const hdr = req.headers['authorization'] || '';
   if(!hdr.startsWith('Bearer ')) return res.status(401).json({ error:'Unauthorized' });
-  const token = hdr.slice(7);
-  const store = readTokenStore();
-  const entry = store.tokens.find(t=> t.token===token);
+  const incoming = hdr.slice(7);
+  const store = loadTokenStore();
+  const inHash = hashToken(incoming);
+  const entry = store.tokens.find(t=> (t.hash && constantTimeEquals(t.hash, inHash)) || (t.token && t.token===incoming));
   if(!entry) return res.status(401).json({ error:'Unauthorized' });
   entry.lastUsedAt = new Date().toISOString();
-  try { writeTokenStore(store); } catch(_){ }
+  try { writeTokenStore(TOK_FILE, store); } catch(_){ }
   req.authRole = entry.role || 'admin';
   req.authTokenId = entry.id;
   req.authTokenSource = entry.source;
@@ -297,8 +401,8 @@ app.post('/api/admin/import', adminAuth, (req,res)=>{
 
 // --- Auth Token Management Endpoints (admin only) ---
 app.get('/api/admin/auth/tokens', adminAuth, requireAdmin, (req,res)=>{
-  const store = readTokenStore();
-  res.json({ tokens: store.tokens.map(t=> ({ id:t.id, role:t.role, label:t.label, source:t.source, createdAt:t.createdAt, lastUsedAt:t.lastUsedAt })) });
+  const store = loadTokenStore();
+  res.json({ tokens: store.tokens.map(t=> ({ id:t.id, role:t.role, label:t.label, source:t.source, createdAt:t.createdAt, lastUsedAt:t.lastUsedAt, legacy: !!t.legacy })) });
 });
 // Lightweight auth check / diagnostics
 app.get('/api/admin/auth/check', adminAuth, (req,res)=>{
@@ -307,42 +411,36 @@ app.get('/api/admin/auth/check', adminAuth, (req,res)=>{
 app.post('/api/admin/auth/tokens', adminAuth, requireAdmin, (req,res)=>{
   const { role='admin', label=null } = req.body || {};
   if(!['admin','read'].includes(role)) return res.status(400).json({ error:'invalid role' });
-  const store = readTokenStore();
-  const tok = { id: genId('tok'), token: genToken(), role, label, source:'generated', createdAt:new Date().toISOString(), lastUsedAt:null };
-  store.tokens.push(tok); writeTokenStore(store);
-  res.json({ id: tok.id, token: tok.token, role: tok.role, label: tok.label });
+  const store = loadTokenStore();
+  const plain = genToken();
+  const tok = { id: genId('tok'), hash: hashToken(plain), role, label, source:'generated', createdAt:new Date().toISOString(), lastUsedAt:null };
+  store.tokens.push(tok); writeTokenStore(TOK_FILE, store);
+  res.json({ id: tok.id, token: plain, role: tok.role, label: tok.label });
 });
 app.post('/api/admin/auth/tokens/:id/reveal', adminAuth, requireAdmin, (req,res)=>{
-  const store = readTokenStore(); const t = store.tokens.find(x=> x.id===req.params.id); if(!t) return res.status(404).json({ error:'not found' });
-  res.json({ id:t.id, token:t.token, role:t.role, label:t.label });
+  const store = loadTokenStore(); const t = store.tokens.find(x=> x.id===req.params.id); if(!t) return res.status(404).json({ error:'not found' });
+  if(!t.token) return res.status(400).json({ error:'unrevealable' }); // hashed only
+  res.json({ id:t.id, token:t.token, role:t.role, label:t.label, legacy: !!t.legacy });
 });
 app.post('/api/admin/auth/tokens/:id/rotate', adminAuth, requireAdmin, (req,res)=>{
-  const store = readTokenStore(); const t = store.tokens.find(x=> x.id===req.params.id); if(!t) return res.status(404).json({ error:'not found' });
+  const store = loadTokenStore(); const t = store.tokens.find(x=> x.id===req.params.id); if(!t) return res.status(404).json({ error:'not found' });
   if(t.source==='env') return res.status(400).json({ error:'cannot rotate env token (change env var instead)' });
-  const old = t.token; t.token = genToken(); t.lastUsedAt=null; writeTokenStore(store);
-  res.json({ id:t.id, newToken:t.token, oldTokenEndsWith: old.slice(-6) });
+  const newPlain = genToken();
+  const oldTokenEndsWith = t.token ? t.token.slice(-6) : null;
+  t.hash = hashToken(newPlain);
+  delete t.token; // remove plaintext
+  t.legacy = false;
+  t.lastUsedAt=null;
+  writeTokenStore(TOK_FILE, store);
+  res.json({ id:t.id, newToken:newPlain, oldTokenEndsWith });
 });
 app.delete('/api/admin/auth/tokens/:id', adminAuth, requireAdmin, (req,res)=>{
-  const store = readTokenStore(); const idx = store.tokens.findIndex(x=> x.id===req.params.id); if(idx===-1) return res.status(404).json({ error:'not found' });
+  const store = loadTokenStore(); const idx = store.tokens.findIndex(x=> x.id===req.params.id); if(idx===-1) return res.status(404).json({ error:'not found' });
   if(store.tokens[idx].source==='env') return res.status(400).json({ error:'cannot delete env token' });
-  store.tokens.splice(idx,1); writeTokenStore(store); res.json({ ok:true });
+  store.tokens.splice(idx,1); writeTokenStore(TOK_FILE, store); res.json({ ok:true });
 });
 
-// Variable extraction helper.
-// New primary syntax: <<VariableName>> (supports accented Latin letters) e.g. <<NuméroProjet>>
-// Backwards compatibility: also accept legacy {{var_name}} so old templates still work.
-// Returns unique variable names (raw text inside delimiters) preserving first-seen casing.
-function extractVariables(body){
-  if (typeof body !== 'string') return [];
-  // Accented Latin range + basic word chars, dot & dash
-  const angled = /<<\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9_\.\-]+)\s*>>/g;
-  const curly  = /{{\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9_\.\-]+)\s*}}/g;
-  const found = new Map(); // lower -> original
-  let m;
-  while((m = angled.exec(body))){ const key=m[1]; const lower=key.toLowerCase(); if(!found.has(lower)) found.set(lower,key); }
-  while((m = curly.exec(body))){ const key=m[1]; const lower=key.toLowerCase(); if(!found.has(lower)) found.set(lower,key); }
-  return Array.from(found.values());
-}
+// (extractVariables now imported from ./lib/variables)
 app.post('/api/admin/variables/extract', adminAuth, (req,res)=>{
   const { body='' } = req.body || {};
   res.json({ variables: extractVariables(body) });
@@ -368,7 +466,15 @@ if (PUBLIC_TEMPLATES) {
 app.get('/admin', (req,res)=>{
   if (!fs.existsSync(TOK_FILE) && !ADMIN_TOKEN && !ADMIN_TOKEN_2) return res.status(500).send('<h1>Admin disabled</h1><p>Set ADMIN_TOKEN in env.</p>');
   res.setHeader('Content-Type','text/html; charset=utf-8');
-  res.end(`<!DOCTYPE html><html><head><title>Admin Studio</title><meta charset="utf-8"/><style>
+  res.end(`<!DOCTYPE html><html><head><title>Admin Studio</title><meta charset="utf-8"/>
+  <link rel="icon" type="image/svg+xml" href="https://github.githubassets.com/favicons/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="https://github.githubassets.com/favicons/favicon.png" />
+  <link rel="apple-touch-icon" href="https://github.githubassets.com/favicons/apple-touch-icon.png" />
+  <meta property="og:title" content="Admin Studio" />
+  <meta property="og:image" content="https://github.githubassets.com/images/modules/open_graph/github-mark.png" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:image" content="https://github.githubassets.com/images/modules/open_graph/github-mark.png" />
+  <style>
   :root{--bg:#f6f8fa;--panel:#ffffff;--border:#d0d7de;--accent:#2563eb;--accent-hover:#1d4ed8;--accent-soft:#e0efff;--danger:#dc2626;--danger-bg:#fee2e2;--radius:10px;--text:#0f172a;--muted:#64748b;--green:#15803d;--green-bg:#dcfce7;}
   *{box-sizing:border-box;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
   body{margin:0;background:linear-gradient(135deg,#f0f4f8,#f7fafc);color:var(--text);} h1{margin:0 0 14px;font-size:20px;letter-spacing:.5px;}
@@ -740,11 +846,11 @@ app.get('/admin', (req,res)=>{
   </script>
   </body></html>`);
 });
-process.on('SIGTERM', ()=>{ log('SIGTERM received, shutting down'); process.exit(0); });
-process.on('SIGINT', ()=>{ log('SIGINT received, shutting down'); process.exit(0); });
+process.on('SIGTERM', ()=>{ log('info','sigterm',{ pid:process.pid }); process.exit(0); });
+process.on('SIGINT', ()=>{ log('info','sigint',{ pid:process.pid }); process.exit(0); });
 
 if (ENABLE_HEARTBEAT) {
-  setInterval(()=>{ log('HEARTBEAT', 'alive pid='+process.pid); }, 60_000).unref();
+  setInterval(()=>{ log('info','heartbeat',{ pid:process.pid }); }, 60_000).unref();
 }
 
 if (ENABLE_SELF_PING) {
@@ -753,18 +859,26 @@ if (ENABLE_SELF_PING) {
     http.get({ host: '127.0.0.1', port: PORT, path: '/api/ping', timeout: 2000 }, res=>{
       // drain
       res.resume();
-    }).on('error', e=> log('SELF_PING_FAIL', e.message));
+    }).on('error', e=> log('warn','self_ping_fail',{ error:e.message }));
   }, 120_000).unref();
 }
 
-const server = app.listen(PORT, HOST, () => {
-  log('START','Listening', `http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-});
+function start(){
+  const server = app.listen(PORT, HOST, () => {
+    log('info','listening',{ url:`http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}` });
+  });
+  server.on('error', (err) => {
+    log('error','listen_error',{ code: err.code, message: err.message });
+    process.exit(1);
+  });
+  return server;
+}
 
-server.on('error', (err) => {
-  log('FATAL_LISTEN_ERROR', err.code || '', err.message);
-  process.exit(1);
-});
+if(require.main === module){
+  start();
+}
+
+module.exports = { app, start };
 
 // Safety: keep event loop busy if nothing else (should not be needed but prevents premature exit in some edge tool contexts)
 setInterval(()=>{}, 3600_000).unref();
